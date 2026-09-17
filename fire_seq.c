@@ -24,11 +24,13 @@ typedef struct {
     ZonaContencao *zonas; 
     
     // ponteiros para as matrizes principais da floresta
+    int *cobertura;
+    int *umidade;
     int *estado_atual;
     int *proximo_estado;
     int *tempo_atual;
     int *proximo_tempo;
-    int *ativacao; 
+    int *ativacao;
 } Simulacao;
 
 void ler_entrada(const char *arquivo_entrada, Simulacao *sim) {
@@ -115,8 +117,93 @@ void ler_entrada(const char *arquivo_entrada, Simulacao *sim) {
     fclose(arquivo);
 }
 
+void alocar_estruturas(Simulacao *sim) {
+    int n = sim->L * sim->C;
+
+    sim->cobertura = (int *)malloc(n * sizeof(int));
+    sim->umidade = (int *)malloc(n * sizeof(int));
+    sim->estado_atual = (int *)malloc(n * sizeof(int));
+    sim->proximo_estado = (int *)malloc(n * sizeof(int));
+    sim->tempo_atual = (int *)malloc(n * sizeof(int));
+    sim->proximo_tempo = (int *)malloc(n * sizeof(int));
+    sim->ativacao = (int *)malloc(n * sizeof(int));
+
+    if (sim->cobertura == NULL || sim->umidade == NULL ||
+        sim->estado_atual == NULL || sim->proximo_estado == NULL ||
+        sim->tempo_atual == NULL || sim->proximo_tempo == NULL ||
+        sim->ativacao == NULL) {
+        fprintf(stderr, "Erro: Falha na alocacao de memoria.\n");
+        exit(EXIT_FAILURE);
+    }
+}
+
+void gerar_floresta(Simulacao *sim) {
+    for (int linha = 0; linha < sim->L; linha++) {
+        for (int coluna = 0; coluna < sim->C; coluna++) {
+            int idx = linha * sim->C + coluna;
+
+            // cast necessario: rand_r espera unsigned int*, seed e' declarado como int
+            int valor = rand_r((unsigned int *)&sim->seed) % 100;
+            if (valor < 10) sim->cobertura[idx] = 0;
+            else if (valor < 20) sim->cobertura[idx] = 1;
+            else if (valor < 55) sim->cobertura[idx] = 2;
+            else sim->cobertura[idx] = 3;
+
+            sim->umidade[idx] = rand_r((unsigned int *)&sim->seed) % 101;
+
+            sim->estado_atual[idx] = (sim->cobertura[idx] <= 1) ? 0 : 1;
+            sim->tempo_atual[idx] = 0;
+        }
+    }
+}
+
+void aplicar_focos(Simulacao *sim) {
+    for (int i = 0; i < sim->F; i++) {
+        int idx = sim->focos[i].linha * sim->C + sim->focos[i].coluna;
+
+        if (sim->cobertura[idx] == 0 || sim->cobertura[idx] == 1) {
+            fprintf(stderr, "Erro: Foco de incendio sobre celula nao combustivel.\n");
+            exit(EXIT_FAILURE);
+        }
+
+        sim->estado_atual[idx] = 2;
+        sim->tempo_atual[idx] = (sim->cobertura[idx] == 2) ? 2 : 4;
+    }
+}
+
+void construir_mapa_ativacao(Simulacao *sim) {
+    int n = sim->L * sim->C;
+    for (int i = 0; i < n; i++) {
+        sim->ativacao[i] = -1;
+    }
+
+    for (int z = 0; z < sim->Z; z++) {
+        ZonaContencao *zona = &sim->zonas[z];
+        for (int linha = zona->linha_inicial; linha <= zona->linha_final; linha++) {
+            for (int coluna = zona->coluna_inicial; coluna <= zona->coluna_final; coluna++) {
+                int idx = linha * sim->C + coluna;
+                if (sim->ativacao[idx] == -1 || zona->passo_ativacao < sim->ativacao[idx]) {
+                    sim->ativacao[idx] = zona->passo_ativacao;
+                }
+            }
+        }
+    }
+}
+
+void liberar_estruturas(Simulacao *sim) {
+    free(sim->focos);
+    free(sim->zonas);
+    free(sim->cobertura);
+    free(sim->umidade);
+    free(sim->estado_atual);
+    free(sim->proximo_estado);
+    free(sim->tempo_atual);
+    free(sim->proximo_tempo);
+    free(sim->ativacao);
+}
+
 int main(int argc, char *argv[]){
-    
+
     if (argc != 2) {
         printf("Erro de passagem de argumento.\n Uso: ./fire_seq entrada.txt");
         exit(EXIT_FAILURE);
@@ -124,10 +211,14 @@ int main(int argc, char *argv[]){
     Simulacao sim;
 
     ler_entrada(argv[1], &sim);
+    alocar_estruturas(&sim);
+    gerar_floresta(&sim);
+    aplicar_focos(&sim);
+    construir_mapa_ativacao(&sim);
 
-    // printf("Matriz: %dx%d, Passos: %d, Threads: %d\n", sim.L, sim.C, sim.P, sim.T);
-    free(sim.focos);
-    free(sim.zonas);
+    // laco de simulacao, checksum e impressao: proximos passos do plano.
+
+    liberar_estruturas(&sim);
 
     return 0;
 }
