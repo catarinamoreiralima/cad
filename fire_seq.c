@@ -61,7 +61,15 @@ void ler_entrada(const char *arquivo_entrada, Simulacao *sim) {
     }
 
     // 2a linha: configuracao do vento (secao 4.2)
-    fscanf(arquivo, "%d %d %d", &sim->vento_linha, &sim->vento_coluna, &sim->intensidade);
+    if (fscanf(arquivo, "%d %d %d",
+               &sim->vento_linha,
+               &sim->vento_coluna,
+               &sim->intensidade) != 3)
+    {
+        fprintf(stderr, "Erro: configuracao do vento incompleta ou invalida.\n");
+        fclose(arquivo);
+        exit(EXIT_FAILURE);
+    }
     if (sim->vento_linha < -1 || sim->vento_linha > 1 ||
         sim->vento_coluna < -1 || sim->vento_coluna > 1 ||
         (sim->vento_linha == 0 && sim->vento_coluna == 0)) {
@@ -74,7 +82,12 @@ void ler_entrada(const char *arquivo_entrada, Simulacao *sim) {
     }
 
     // 3a linha: quantidade de focos (F) e zonas (Z) (secao 4.3)
-    fscanf(arquivo, "%d %d", &sim->F, &sim->Z);
+    if (fscanf(arquivo, "%d %d", &sim->F, &sim->Z) != 2)
+    {
+        fprintf(stderr, "Erro: quantidades de focos e zonas invalidas.\n");
+        fclose(arquivo);
+        exit(EXIT_FAILURE);
+    }
     if (sim->F < 0 || sim->Z < 0) {
         fprintf(stderr, "Erro: Quantidade de focos ou zonas nao pode ser negativa.\n");
         exit(EXIT_FAILURE);
@@ -85,7 +98,16 @@ void ler_entrada(const char *arquivo_entrada, Simulacao *sim) {
 
     // proximas F linhas: focos iniciais de incendio
     for (int i = 0; i < sim->F; i++) {
-        fscanf(arquivo, "%d %d", &sim->focos[i].linha, &sim->focos[i].coluna);
+        if (fscanf(arquivo, "%d %d",
+                   &sim->focos[i].linha,
+                   &sim->focos[i].coluna) != 2)
+        {
+            fprintf(stderr, "Erro: foco %d incompleto ou invalido.\n", i + 1);
+            fclose(arquivo);
+            free(sim->focos);
+            free(sim->zonas);
+            exit(EXIT_FAILURE);
+        }
 
         if (sim->focos[i].linha < 0 || sim->focos[i].linha >= sim->L ||
             sim->focos[i].coluna < 0 || sim->focos[i].coluna >= sim->C) {
@@ -105,10 +127,19 @@ void ler_entrada(const char *arquivo_entrada, Simulacao *sim) {
 
     // proximas Z linhas: zonas de contencao
     for (int i = 0; i < sim->Z; i++) {
-        fscanf(arquivo, "%d %d %d %d %d",
-               &sim->zonas[i].passo_ativacao,
-               &sim->zonas[i].linha_inicial, &sim->zonas[i].coluna_inicial,
-               &sim->zonas[i].linha_final, &sim->zonas[i].coluna_final);
+        if (fscanf(arquivo, "%d %d %d %d %d",
+                   &sim->zonas[i].passo_ativacao,
+                   &sim->zonas[i].linha_inicial,
+                   &sim->zonas[i].coluna_inicial,
+                   &sim->zonas[i].linha_final,
+                   &sim->zonas[i].coluna_final) != 5)
+        {
+            fprintf(stderr, "Erro: zona %d incompleta ou invalida.\n", i + 1);
+            fclose(arquivo);
+            free(sim->focos);
+            free(sim->zonas);
+            exit(EXIT_FAILURE);
+        }
 
         if (sim->zonas[i].passo_ativacao < 0 || sim->zonas[i].passo_ativacao >= sim->P) {
             fprintf(stderr, "Erro: Passo de ativacao da zona invalido.\n");
