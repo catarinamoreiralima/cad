@@ -1,0 +1,423 @@
+\documentclass[12pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[brazil]{babel}
+\usepackage{lmodern}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{microtype}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs,tabularx,array}
+\usepackage{graphicx,xcolor}
+\usepackage{listings}
+\usepackage[hidelinks]{hyperref}
+\setlength{\parskip}{0.35em}
+\setlength{\parindent}{1.25cm}
+\newcommand{\pendente}{\textemdash}
+\lstset{basicstyle=\ttfamily\small,breaklines=true,frame=single,
+  columns=fullflexible,keepspaces=true,showstringspaces=false}
+\newcommand{\grafico}[3]{
+  \begin{figure}[htbp]
+    \centering
+    \IfFileExists{#1}{\includegraphics[width=0.9\linewidth]{#1}}{
+      \fbox{\parbox[c][3cm][c]{0.85\linewidth}{\mbox{}}}}
+    \caption{#2}\label{#3}
+  \end{figure}}
+
+\begin{document}
+\begin{titlepage}
+\centering
+{\large Universidade de São Paulo\par}
+{\large Instituto de Ciências Matemáticas e de Computação\par}
+\vspace{1cm}
+{\large SSC0903 --- Computação de Alto Desempenho\par}
+{\large Primeiro Trabalho Prático\par}
+\vfill
+{\LARGE\bfseries Incendio Florestal\par}
+\vspace{0.5cm}
+{\Large Implementações sequencial e paralela com OpenMP\par}
+\vfill
+\begin{tabular}{ll}
+\textbf{Integrante} & \textbf{Número USP} \\
+João Ricardo de Almeida Lustosa & 15453697 \\
+{Nome completo} & {Número USP} \\
+{Nome completo} & {Número USP} \\
+\end{tabular}
+\vfill
+São Carlos\par
+Setembro de 2026
+\end{titlepage}
+\tableofcontents
+\newpage
+
+\section{Introdução}
+
+Simulações em grades discretas permitem representar a evolução de um sistema
+por meio de regras locais aplicadas repetidamente a suas células. Neste
+trabalho, uma matriz retangular representa uma área florestal na qual o fogo
+se propaga a partir de focos iniciais. A evolução depende da cobertura e da
+umidade de cada célula, da presença de vizinhos em chamas, da direção e da
+intensidade do vento e da ativação de zonas de contenção em instantes
+predeterminados~\cite{enunciado}.
+
+O modelo utiliza passos discretos e atualização síncrona: o resultado de uma
+célula em um passo é calculado a partir da configuração atual, sem utilizar
+resultados parcialmente produzidos para outras células. Essa propriedade
+permite distribuir as atualizações entre threads, desde que sejam respeitadas
+as dependências entre as etapas. A ativação das contenções deve terminar
+antes da propagação, e a atualização completa deve preceder a troca das
+estruturas que representam as configurações atual e seguinte.
+
+A atividade relaciona, assim, correção e desempenho em programação paralela
+com memória compartilhada. A distribuição das células pode reduzir o tempo
+de processamento, mas introduz custos de sincronização e escalonamento.
+Além disso, o trabalho realizado por uma célula depende de seu estado:
+células intactas avaliam a vizinhança, enquanto outros estados exigem
+transições mais simples. A quantidade de threads, a política de distribuição
+das iterações e o tamanho da grade são, portanto, aspectos relevantes para
+a avaliação experimental.
+
+O projeto contempla duas implementações em C: uma sequencial, utilizada
+como referência de comparação, e outra paralela com OpenMP. Ambas devem
+produzir os mesmos resultados para uma mesma entrada, exceto pelo tempo de
+execução. Embora a inicialização empregue geração pseudoaleatória, a
+semente e a ordem das chamadas são fixadas, e não há decisões aleatórias
+durante a propagação. O modelo é o definido para a disciplina e não pretende
+representar um modelo físico validado de incêndios florestais.
+
+\section{Objetivos}
+
+\subsection{Objetivo geral}
+
+Implementar e avaliar uma simulação determinística da propagação de incêndio,
+comparando uma solução sequencial em C com uma solução paralela em C/OpenMP,
+de modo a preservar as regras do modelo e investigar o desempenho em
+diferentes configurações de execução.
+
+\subsection{Objetivos específicos}
+
+\begin{itemize}
+\item Representar a floresta em armazenamento linear e implementar a leitura,
+validação e inicialização dos dados conforme o enunciado.
+\item Implementar as transições de estado, a influência direcional do vento,
+os tempos de queima e a ativação de zonas de contenção.
+\item Desenvolver uma versão sequencial que sirva de referência para a
+validação da versão paralela, complementada por testes das regras do modelo.
+\item Distribuir a ativação e a atualização das células em uma região
+paralela persistente, utilizando \texttt{omp for}, SIMD, reduções e
+sincronização adequada.
+\item Verificar a equivalência das saídas entre versões e a independência
+dos resultados em relação à quantidade de threads e ao schedule.
+\item Comparar pelo menos duas políticas de escalonamento e analisar tempos,
+speedup e eficiência em diferentes cargas e quantidades de threads.
+\end{itemize}
+
+\section{Modelagem do problema}
+
+\subsection{Domínio espacial e temporal}
+
+A área é representada pelo conjunto de células
+\begin{equation}
+\Omega=\{(l,c)\mid 0\leq l<L,\;0\leq c<C\},
+\end{equation}
+com $N=LC$ posições. O armazenamento é linear, com índice $i=lC+c$.
+As coordenadas podem ser recuperadas pela divisão inteira $l=i/C$ e pelo
+resto $c=i\bmod C$. Essa representação permite percorrer a grade por um
+único laço e distribuir suas iterações entre threads.
+
+A evolução ocorre em, no máximo, $P$ passos, numerados de $0$ a $P-1$.
+Uma configuração inicial é construída antes do primeiro passo. Em cada
+iteração, a aplicação das regras produz a configuração seguinte, que se
+torna a base da próxima atualização.
+
+\subsection{Parâmetros e restrições da entrada}
+
+O arquivo informa $L$, $C$, $P$, a quantidade de threads $T$, a semente e
+o limiar de ignição. Em seguida, especifica as componentes do vento e sua
+intensidade, as quantidades de focos $F$ e zonas $Z$, as coordenadas dos
+focos e os retângulos de contenção com seus passos de ativação.
+
+São exigidos $L,C,T,\mathrm{LIMIAR}>0$, $P,F,Z\geq0$,
+componentes do vento em $\{-1,0,1\}$, direção diferente de $(0,0)$ e
+intensidade entre 0 e 5. Os focos devem ser distintos, internos à grade e
+posicionados sobre células combustíveis. As zonas devem ter limites
+ordenados e internos à grade, com $0\leq p_{\mathrm{ativação}}<P$.
+Consequentemente, não há passo de ativação válido quando $P=0$.
+
+As duas aplicações recebem somente o caminho do arquivo de entrada:
+\begin{lstlisting}
+./fire_seq entrada.txt
+./fire_omp entrada.txt
+\end{lstlisting}
+O valor de $T$ é obtido desse arquivo, inclusive nos experimentos que
+variam a quantidade de threads.
+
+\subsection{Cobertura, umidade e inicialização determinística}
+
+A cobertura e a umidade são propriedades fixas de cada célula. A
+inicialização percorre a matriz em ordem crescente de linhas e colunas,
+com uma única thread. Para cada posição, primeiro obtém-se
+\texttt{rand\_r(\&seed) \% 100} para determinar a cobertura e, imediatamente
+depois, \texttt{rand\_r(\&seed) \% 101} para determinar a umidade.
+Preservar essa ordem é necessário para que as versões recebam a mesma
+configuração inicial no ambiente experimental.
+
+\begin{table}[htbp]
+\centering
+\caption{Coberturas e parâmetros do modelo. As proporções são as da regra de geração, não contagens exatas de cada matriz.}
+\label{tab:cobertura}
+\begin{tabular}{clrrr}
+\toprule
+\textbf{Código} & \textbf{Cobertura} & \textbf{Sorteio} & \textbf{Fator} & \textbf{Queima} \\
+\midrule
+0 & Água & 0--9 & 0 & \pendente \\
+1 & Solo exposto & 10--19 & 0 & \pendente \\
+2 & Vegetação rasteira & 20--54 & 8 & 2 passos \\
+3 & Floresta & 55--99 & 12 & 4 passos \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Água e solo exposto começam no estado não combustível. Vegetação rasteira
+e floresta começam intactas, exceto nas posições dos focos iniciais, que
+passam ao estado em chamas e recebem o tempo de queima de sua cobertura.
+A quantidade inicialmente combustível é registrada antes da evolução,
+incluindo os focos, para servir de denominador dos percentuais finais.
+
+\subsection{Estados e estruturas de armazenamento}
+
+O estado de uma célula pode ser não combustível (0), intacta (1), em
+chamas (2), queimada (3) ou contenção (4). Cobertura e estado são conceitos
+distintos: a cobertura identifica o material da célula; o estado indica
+sua situação na evolução do incêndio.
+
+\begin{table}[htbp]
+\centering
+\caption{Vetores utilizados para representar a floresta.}
+\label{tab:vetores}
+\begin{tabularx}{\linewidth}{lX}
+\toprule
+\textbf{Vetor} & \textbf{Função} \\
+\midrule
+\texttt{cobertura} & Tipo de cobertura de cada posição. \\
+\texttt{umidade} & Umidade inteira entre 0 e 100. \\
+\texttt{estado\_atual} & Configuração usada como base da atualização. \\
+\texttt{proximo\_estado} & Configuração produzida pelo passo. \\
+\texttt{tempo\_atual} & Tempo restante de queima na configuração atual. \\
+\texttt{proximo\_tempo} & Tempo restante calculado para a configuração seguinte. \\
+\texttt{ativacao} & Primeiro passo de contenção da posição, ou $-1$. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Os dois pares de vetores de estado e tempo evitam que uma célula utilize
+uma atualização parcial de sua vizinha. Ao terminar o passo, seus
+ponteiros são trocados. O armazenamento da grade é $O(LC)$; somadas as
+descrições dos focos e zonas, o espaço é $O(LC+F+Z)$.
+
+\subsection{Zonas de contenção}
+
+Cada zona corresponde a um retângulo de limites inclusivos e a um passo
+de ativação. Antes da simulação, constrói-se um mapa com o menor passo
+associado a cada célula nas zonas sobrepostas; posições sem zona recebem
+$-1$. A construção desse mapa não integra o trecho cronometrado.
+
+No início do passo programado, apenas células intactas tornam-se contenção.
+Os demais estados permanecem inalterados: uma zona não apaga fogo existente
+nem recupera células queimadas. A ativação ocorre somente no passo indicado,
+e as células que se tornam contenção permanecem nesse estado.
+
+\subsection{Vizinhança e potencial de ignição}
+
+A propagação utiliza os oito vizinhos de Moore, ignorando posições fora
+da grade. Apenas vizinhos em chamas contribuem. Para uma célula alvo $(l,c)$
+e um vizinho $(l_v,c_v)$, define-se a direção do vizinho para o alvo:
+\begin{equation}
+\Delta l=l-l_v,\qquad \Delta c=c-c_v.
+\end{equation}
+O peso básico $b_v$ vale 10 se $|\Delta l|+|\Delta c|=1$ e 7 para
+vizinhos diagonais. Dadas a direção fixa $(w_l,w_c)$ e a intensidade $V$
+do vento, o alinhamento e o peso ajustado são
+\begin{align}
+A_v &= \Delta l\,w_l+\Delta c\,w_c, \\
+P_v &= \max(1,b_v+V A_v).
+\end{align}
+O produto escalar pode assumir valores entre $-2$ e $2$. Valores positivos
+favorecem a propagação; negativos a desfavorecem. Quando $V=0$, o peso
+ajustado coincide com o básico.
+
+Se $f_i$ é o fator combustível e $u_i$ a umidade da célula alvo, seu
+potencial é
+\begin{equation}
+S_i=\sum_{v\text{ em chamas}}P_v,
+\qquad I_i=\left\lfloor\frac{S_i f_i(100-u_i)}{100}\right\rfloor.
+\end{equation}
+Uma célula intacta incendeia quando $I_i\geq\mathrm{LIMIAR}$.
+Todos esses cálculos usam aritmética inteira, evitando diferenças de
+arredondamento na propagação entre as versões.
+
+\subsection{Transições, atualização síncrona e parada}
+
+Após a ativação das zonas, células não combustíveis, queimadas e de
+contenção mantêm seus estados. Células intactas permanecem intactas ou
+incendeiam conforme o potencial. Células já em chamas têm seu tempo
+reduzido em uma unidade e tornam-se queimadas ao atingir zero.
+
+Uma célula recém-incendiada recebe o tempo completo de sua cobertura.
+Ela não propaga fogo imediatamente dentro do mesmo passo: sua contribuição
+passa a existir quando a configuração produzida se torna a configuração
+atual. Essa separação preserva a atualização síncrona e permite que as
+células sejam processadas em ordens diferentes sem alterar o resultado.
+
+A sequência definida para cada passo é: ativar as zonas, produzir os
+próximos estados e tempos, calcular as estatísticas do próximo estado,
+trocar os vetores e verificar a parada. A execução termina ao completar
+$P$ passos ou quando não há células em chamas. Se não houver fogo após a
+inicialização, nenhum passo é executado, mesmo com contenções futuras.
+
+\subsection{Estatísticas e saída}
+
+As novas ignições de um passo são as transições de intacta para em chamas;
+os focos iniciais não integram esse total. O pico registra a maior
+quantidade de novas ignições e, em empate, o primeiro passo. Na ausência
+de novas ignições, o resultado do pico é $(-1,0)$.
+
+Se $B_0$ é a quantidade inicialmente combustível, $Q$ a quantidade final
+queimada, $H$ a quantidade final em chamas e $K$ a quantidade final em
+contenção, os percentuais são
+\begin{equation}
+\text{Queimado}=100\frac{Q+H}{B_0},\qquad
+\text{Protegido}=100\frac{K}{B_0}.
+\end{equation}
+Quando $B_0=0$, ambos são zero. Células ainda em chamas entram no percentual
+queimado porque já foram atingidas pelo incêndio.
+
+O checksum é calculado sequencialmente após a simulação, na ordem linear
+da matriz. Partindo de zero, para cada célula incorpora-se primeiro o estado
+e depois o tempo, pela operação $h\leftarrow31h+x$, utilizando
+\texttt{unsigned long long} conforme o enunciado. Ele complementa a
+comparação dos resultados, sem substituir a verificação das demais saídas.
+
+A saída contém passos executados, as cinco contagens finais, total e pico
+de ignições, os dois percentuais, checksum e tempo. Os percentuais têm duas
+casas decimais e o tempo tem seis; todos os campos, exceto o tempo, devem
+coincidir entre as versões.
+
+\section{Implementação sequencial}
+
+\section{Implementação paralela}
+
+\subsection{Estratégia de paralelização}
+
+\subsection{Compartilhamento e sincronização}
+
+\subsection{Escalonamento}
+
+\section{Validação da correção}
+
+
+\begin{table}[htbp]
+\centering
+\caption{Validação da versão final.}
+\begin{tabularx}{\linewidth}{Xlll}
+\toprule
+\textbf{Caso} & \textbf{Threads} & \textbf{Schedule} & \textbf{Resultado} \\
+\midrule
+Carga pequena & \pendente & \pendente & \pendente \\
+Carga média & \pendente & \pendente & \pendente \\
+Carga grande & \pendente & \pendente & \pendente \\
+Zero passos / sem focos & \pendente & \pendente & \pendente \\
+Contenções sobrepostas & \pendente & \pendente & \pendente \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+
+\section{Ambiente e metodologia experimental}
+
+\subsection{Ambiente das duas versões}
+\begin{table}[htbp]
+\centering
+\caption{Ambiente experimental.}
+\begin{tabularx}{\linewidth}{lX}
+\toprule
+\textbf{Item} & \textbf{Configuração} \\
+\midrule
+CPU e núcleos & \pendente \\
+Memória e sistema & \pendente \\
+Compilador & \pendente \\
+Compilação sequencial & \pendente \\
+Compilação paralela & \pendente \\
+Execução OpenMP & \pendente \\
+Versão dos fontes & \pendente \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Cargas e protocolo de execução}
+\begin{table}[htbp]
+\centering
+\caption{Cargas fornecidas. T indica o valor original, que pode variar nos experimentos.}
+\begin{tabular}{lrrrrrr}
+\toprule
+\textbf{Carga} & $L$ & $C$ & $P$ & $T$ & $F$ & $Z$ \\
+\midrule
+Pequena & 400 & 500 & 80 & 4 & 3 & 2 \\
+Média & 1200 & 1500 & 100 & 8 & 6 & 4 \\
+Grande & 2500 & 2500 & 100 & 8 & 10 & 6 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+\subsection{Delimitação do trecho cronometrado}
+
+O recorte especificado inclui ativação das zonas, propagação, atualização
+dos estados e tempos, estatísticas, troca das matrizes e verificação da
+parada. Exclui leitura, validação, alocação, geração da floresta, definição
+dos focos, construção do mapa, checksum, percentuais e impressão. A medição
+deve utilizar \texttt{omp\_get\_wtime()}.
+
+
+\subsection{Métricas}
+Para a mesma carga, o speedup e a eficiência percentual são definidos por
+\begin{equation}
+S(T)=\frac{t_{\mathrm{seq}}}{t_{\mathrm{omp}}(T)},\qquad
+E(T)=\frac{S(T)}{T}\times100\%.
+\end{equation}
+A referência é o programa sequencial. A versão OpenMP com uma thread é
+uma configuração adicional e não substitui essa referência.
+
+\section{Resultados}
+
+\begin{table}[htbp]
+\centering\small
+\caption{Tempos e métricas de desempenho.}
+\begin{tabular}{llrrrrr}
+\toprule
+\textbf{Carga} & \textbf{Schedule} & $T$ & $t_{\mathrm{seq}}$ (s) & $t_{\mathrm{omp}}$ (s) & $S(T)$ & $E(T)$ (\%) \\
+\midrule
+\pendente & \pendente & \pendente & \pendente & \pendente & \pendente & \pendente \\
+\pendente & \pendente & \pendente & \pendente & \pendente & \pendente & \pendente \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\grafico{figuras/tempos.pdf}{Tempo em função do número de threads. Identificar cargas e schedules.}{fig:tempos}
+\grafico{figuras/speedup.pdf}{Speedup em função do número de threads, com referência ideal $S(T)=T$.}{fig:speedup}
+\grafico{figuras/eficiencia.pdf}{Eficiência percentual em função do número de threads.}{fig:eficiencia}
+
+\section{Análise e discussão}
+
+
+\section{Conclusão}
+
+
+\begin{thebibliography}{9}
+\bibitem{enunciado}
+Universidade de São Paulo, ICMC/SSC.
+\textit{SSC0903 --- Primeiro Trabalho Prático: simulação paralela da
+propagação direcional de incêndio com zonas de contenção}.
+Arquivo \texttt{Trab01-Fire-OMP-v1.pdf}, setembro de 2026.
+\end{thebibliography}
+
+\end{document}
