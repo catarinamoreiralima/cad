@@ -1,5 +1,5 @@
 CC := gcc
-CFLAGS := -O2 -Wall -Wextra -std=c11 -fopenmp
+CFLAGS := -O3 -Wall -Wextra -std=c11 -fopenmp
 LDLIBS := -fopenmp
 
 .PHONY: all clean

@@ -24,7 +24,7 @@ NUCLEOS="$(sysctl -n hw.logicalcpu)"
 MAKEFILE="Makefile.macos"
 
 REPETICOES="${REPETICOES:-10}"
-THREADS="${THREADS:-1 2 3 4 5 6 7 8}"
+THREADS="${THREADS:- 2 4 6 8}"
 CARGAS="${CARGAS:-pequena media grande}"
 # Politica do laco de atualizacao, extraida do pragma com a reducao de
 # ignicoes; "guided, 1024" vira "guided:1024" para nao quebrar o CSV.

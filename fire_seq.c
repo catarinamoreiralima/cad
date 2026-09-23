@@ -8,11 +8,13 @@
 #include <limits.h>
 #include <omp.h> // usado apenas para medir tempo com omp_get_wtime() (secao 12 do enunciado)
 
-// rand_r e' POSIX e nao existe no MinGW/Windows. Esta versao de compatibilidade
-// reproduz o algoritmo do rand_r da glibc, mantendo a mesma floresta e checksum
-// nas duas plataformas. Em sistemas POSIX, usa-se a funcao nativa.
+// rand_r e' POSIX e nao existe no MinGW/Windows; no macOS existe, mas usa um
+// algoritmo diferente do da glibc e gera outra floresta para a mesma seed.
+// Nesses dois casos usa-se esta versao de compatibilidade, que reproduz o
+// algoritmo do rand_r da glibc, mantendo a mesma floresta e checksum do Linux.
+// Nos demais sistemas POSIX, usa-se a funcao nativa.
 static int fire_rand_r(unsigned int *seed) {
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__APPLE__)
     unsigned int next = *seed;
     unsigned int resultado;
 
@@ -65,7 +67,13 @@ typedef struct {
     int *tempo_atual;     // tempo de queima restante da celula no passo atual
     int *proximo_tempo;   // tempo de queima calculado para o proximo passo
     int *ativacao;        // ativacao[idx] = -1 (fora de zona) ou o passo em que a zona ativa essa celula
+
+    int pesos[8];          // peso pv de cada uma das 8 direcoes de Moore, pre-calculado uma unica vez
 } Simulacao;
+
+// Deslocamentos fixos dos 8 vizinhos de Moore (ordem usada por potencial_ignicao/precalcular_pesos).
+static const int DL[8] = {-1, -1, -1,  0, 0,  1, 1, 1};
+static const int DC[8] = {-1,  0,  1, -1, 1, -1, 0, 1};
 
 // Le e valida o arquivo de entrada (secoes 4 e 5 do enunciado).
 // Encerra o programa com EXIT_FAILURE em qualquer inconsistencia.
@@ -284,8 +292,8 @@ void aplicar_focos(Simulacao *sim) {
 // nenhuma zona, ou o passo de ativacao caso contrario. Em zonas sobrepostas,
 // prevalece o menor passo de ativacao.
 void construir_mapa_ativacao(Simulacao *sim) {
-    int n = sim->L * sim->C;
-    for (int i = 0; i < n; i++) {
+    long long n = (long long)sim->L * (long long)sim->C;
+    for (long long i = 0; i < n; i++) {
         sim->ativacao[i] = -1;
     }
 
@@ -293,7 +301,7 @@ void construir_mapa_ativacao(Simulacao *sim) {
         ZonaContencao *zona = &sim->zonas[z];
         for (int linha = zona->linha_inicial; linha <= zona->linha_final; linha++) {
             for (int coluna = zona->coluna_inicial; coluna <= zona->coluna_final; coluna++) {
-                int idx = linha * sim->C + coluna;
+                long long idx = (long long)linha * sim->C + coluna;
                 if (sim->ativacao[idx] == -1 || zona->passo_ativacao < sim->ativacao[idx]) {
                     sim->ativacao[idx] = zona->passo_ativacao;
                 }
@@ -302,13 +310,33 @@ void construir_mapa_ativacao(Simulacao *sim) {
     }
 }
 
+// Pre-calcula o peso pv de cada uma das 8 direcoes de Moore (secao 8): esses
+// valores dependem apenas de vento_linha/vento_coluna/intensidade, fixos
+// durante toda a simulacao, entao calcula-los uma unica vez evita repetir a
+// mesma conta a cada vizinho, de cada celula intacta, em cada passo.
+// Chamada em main() logo apos ler_entrada, fora do trecho cronometrado.
+void precalcular_pesos(Simulacao *sim) {
+    for (int k = 0; k < 8; k++) {
+        int prop_linha = -DL[k];
+        int prop_coluna = -DC[k];
+        int ortogonal = (abs(prop_linha) + abs(prop_coluna) == 1);
+        int p_basico = ortogonal ? 10 : 7;
+
+        int A = prop_linha * sim->vento_linha + prop_coluna * sim->vento_coluna;
+        int pv = p_basico + sim->intensidade * A;
+        if (pv < 1) pv = 1;
+
+        sim->pesos[k] = pv;
+    }
+}
+
 // Ativa, no inicio do passo "passo", as zonas de contencao programadas para
 // esse passo (secao 7.2 / Quadro 7.2.1). Apenas celulas intactas viram
 // contencao; os demais estados (inclusive "em chamas") permanecem como estao,
 // pois a contencao nao pode apagar um incendio ja iniciado.
 void ativar_zonas(Simulacao *sim, int passo) {
-    int n = sim->L * sim->C;
-    for (int i = 0; i < n; i++) {
+    long long n = (long long)sim->L * (long long)sim->C;
+    for (long long i = 0; i < n; i++) {
         if (sim->ativacao[i] == passo && sim->estado_atual[i] == 1) {
             sim->estado_atual[i] = 4;
         }
@@ -317,37 +345,23 @@ void ativar_zonas(Simulacao *sim, int passo) {
 
 // Calcula o potencial de ignicao I de uma celula intacta (secao 8), somando
 // a contribuicao de cada vizinho de Moore em chamas conforme a direcao do
-// vento e o tipo de posicao (ortogonal/diagonal).
-int potencial_ignicao(Simulacao *sim, int idx) {
-    int linha = idx / sim->C;
-    int coluna = idx % sim->C;
+// vento e o tipo de posicao (ortogonal/diagonal). Os pesos pv de cada
+// direcao ja vem pre-calculados em sim->pesos (ver precalcular_pesos).
+int potencial_ignicao(Simulacao *sim, long long idx) {
+    long long linha = idx / sim->C;
+    long long coluna = idx % sim->C;
     int S = 0;
 
     // percorre os 8 vizinhos de Moore, ignorando os que ficam fora da matriz
-    for (int dl = -1; dl <= 1; dl++) {
-        for (int dc = -1; dc <= 1; dc++) {
-            if (dl == 0 && dc == 0) continue;
+    for (int k = 0; k < 8; k++) {
+        long long vl = linha + DL[k];
+        long long vc = coluna + DC[k];
+        if (vl < 0 || vl >= sim->L || vc < 0 || vc >= sim->C) continue;
 
-            int vl = linha + dl;
-            int vc = coluna + dc;
-            if (vl < 0 || vl >= sim->L || vc < 0 || vc >= sim->C) continue;
+        long long vidx = vl * sim->C + vc;
+        if (sim->estado_atual[vidx] != 2) continue; // so vizinhos em chamas contribuem
 
-            int vidx = vl * sim->C + vc;
-            if (sim->estado_atual[vidx] != 2) continue; // so vizinhos em chamas contribuem
-
-            // sentido de propagacao do fogo, do vizinho para a celula avaliada
-            int prop_linha = -dl;
-            int prop_coluna = -dc;
-            int ortogonal = (abs(prop_linha) + abs(prop_coluna) == 1);
-            int p_basico = ortogonal ? 10 : 7;
-
-            // alinhamento com o vento: -2 (contrario) a 2 (totalmente alinhado)
-            int A = prop_linha * sim->vento_linha + prop_coluna * sim->vento_coluna;
-            int pv = p_basico + sim->intensidade * A;
-            if (pv < 1) pv = 1; // peso do vizinho nunca eh menor que 1
-
-            S += pv;
-        }
+        S += sim->pesos[k];
     }
 
     // fator de combustivel: 8 para vegetacao rasteira, 12 para floresta (Quadro 6.2.2)
@@ -359,10 +373,10 @@ int potencial_ignicao(Simulacao *sim, int idx) {
 // estado_atual (secao 7.3), contando quantas novas ignicoes ocorreram nesse
 // passo. Nunca le nem escreve estado_atual/tempo_atual, apenas os proximos.
 void calcular_proximo_estado(Simulacao *sim, int *ignicoes_no_passo) {
-    int n = sim->L * sim->C;
+    long long n = (long long)sim->L * (long long)sim->C;
     *ignicoes_no_passo = 0;
 
-    for (int idx = 0; idx < n; idx++) {
+    for (long long idx = 0; idx < n; idx++) {
         int estado = sim->estado_atual[idx];
 
         if (estado == 0 || estado == 3 || estado == 4) {
@@ -396,8 +410,8 @@ void calcular_proximo_estado(Simulacao *sim, int *ignicoes_no_passo) {
 
 // Condicao de parada (secao 9): verdadeiro enquanto existir alguma celula em chamas.
 int existe_em_chamas(Simulacao *sim) {
-    int n = sim->L * sim->C;
-    for (int i = 0; i < n; i++) {
+    long long n = (long long)sim->L * (long long)sim->C;
+    for (long long i = 0; i < n; i++) {
         if (sim->estado_atual[i] == 2) return 1;
     }
     return 0;
@@ -418,9 +432,9 @@ void trocar_matrizes(Simulacao *sim) {
 // Conta as celulas inicialmente combustiveis (vegetacao rasteira + floresta),
 // usada como base para os percentuais queimado/protegido (secao 10).
 int contar_combustiveis_iniciais(Simulacao *sim) {
-    int n = sim->L * sim->C;
+    long long n = (long long)sim->L * (long long)sim->C;
     int total = 0;
-    for (int i = 0; i < n; i++) {
+    for (long long i = 0; i < n; i++) {
         if (sim->cobertura[i] == 2 || sim->cobertura[i] == 3) total++;
     }
     return total;
@@ -429,14 +443,14 @@ int contar_combustiveis_iniciais(Simulacao *sim) {
 // Conta quantas celulas terminaram a simulacao em cada um dos 5 estados.
 void contar_estados_finais(Simulacao *sim, int *nao_combustiveis, int *intactas,
                             int *em_chamas, int *queimadas, int *contencao) {
-    int n = sim->L * sim->C;
+    long long n = (long long)sim->L * (long long)sim->C;
     *nao_combustiveis = 0;
     *intactas = 0;
     *em_chamas = 0;
     *queimadas = 0;
     *contencao = 0;
 
-    for (int i = 0; i < n; i++) {
+    for (long long i = 0; i < n; i++) {
         switch (sim->estado_atual[i]) {
             case 0: (*nao_combustiveis)++; break;
             case 1: (*intactas)++; break;
@@ -504,6 +518,7 @@ int main(int argc, char *argv[]){
 
     // preparacao da simulacao: nada disto entra no trecho cronometrado (secao 12)
     ler_entrada(argv[1], &sim);
+    precalcular_pesos(&sim);
     alocar_estruturas(&sim);
     gerar_floresta(&sim);
     aplicar_focos(&sim);
