@@ -41,6 +41,7 @@
 \textbf{Integrante} & \textbf{Número USP} \\
 João Ricardo de Almeida Lustosa & 15453697 \\
 Catarina Moreira Lima & 8957221 \\
+Larissa Pires Moreira Rocha Duarte & 15522358 \\
 {Nome completo} & {Número USP} \\
 \end{tabular}
 \vfill
@@ -667,14 +668,27 @@ pré-cálculo dos pesos dos vizinhos e a padronização dos índices para
 \end{tabularx}
 \end{table}
 
-\noindent\textbf{Observação sobre o ambiente.} Todos os resultados
-apresentados na Seção~\ref{sec:resultados} e nas seções seguintes desta
-versão do relatório foram obtidos exclusivamente no ambiente macOS
-descrito acima, com o script \texttt{scripts/run\_macos.sh}. Os
-experimentos equivalentes no cluster Linux da disciplina (usando
-\texttt{scripts/run\_linux.sh} e \texttt{Makefile}) ainda serão
-executados; quando disponíveis, serão incorporados a uma versão
-revisada deste relatório.
+\begin{table}[H]
+\centering
+\caption{Ambiente experimental --- Linux.}
+\begin{tabularx}{\linewidth}{lX}
+\toprule
+\textbf{Item} & \textbf{Configuração} \\
+\midrule
+CPU e núcleos & AMD Ryzen 5 (8 núcleos no total) \\
+Memória e sistema & 8\,GiB de RAM; Ubuntu 24.04.4 LTS; arquitetura x86\_64 \\
+Compilador & gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 \\
+Compilação sequencial & \texttt{gcc \-O3 \-Wall \-Wextra \-std\=c11 \-fopenmp \-o fire\_seq fire\_seq.c \-fopenmp
+gcc \-O3 \-Wall \-Wextra \-std\=c11 \-fopenmp \-o fire\_omp fire\_omp.c \-fopenmp
+} \\
+Compilação paralela & mesmos parâmetros de compilação (inclusive \texttt{-O3}), alvo \texttt{fire\_omp} (\texttt{fire\_omp.c}) -- os dois binários recebem o mesmo nível de otimização, incluindo a vetorização automática (SIMD) que o compilador aplica a ambos \\
+Execução OpenMP & \texttt{T} lido do arquivo de entrada e fixado com \texttt{num\_threads(T)} e \texttt{omp\_set\_dynamic(0)}; a política de escalonamento do laço de atualização é fixada em tempo de compilação na diretiva \texttt{omp for} -- duas políticas foram medidas no Linux (\texttt{guided(1024)} e \texttt{dynamic(1024)}), cada uma recompilando \texttt{fire\_omp} isoladamente; a versão final do código usa \texttt{guided(1024)} \\
+Versão dos fontes & branch \texttt{main}, com a fusão de barreiras, o
+pré-cálculo dos pesos dos vizinhos e a padronização dos índices para
+\texttt{long long} descritos na Seção~\ref{sec:transicoes} e adiante \\
+\bottomrule
+\end{tabularx}
+\end{table}
 
 \subsection{Cargas e protocolo de execução}
 \begin{table}[H]
@@ -704,7 +718,10 @@ uma vez para cada uma das três políticas de escalonamento comparadas
 recompilando \texttt{fire\_omp} a cada rodada apenas com o argumento de
 \texttt{schedule} trocado na diretiva \texttt{omp for}
 (Seção~\ref{sec:escalonamento}), totalizando $3\times150=450$ execuções
-nesta versão do relatório.
+no macOS. No Linux, \texttt{guided(1024)} e \texttt{dynamic(1024)} foram
+executadas cada uma em uma rodada de 150 execuções (10 repetições por
+combinação), totalizando 300; \texttt{static} não foi medida nesse
+ambiente.
 
 \subsection{Delimitação do trecho cronometrado}
 
@@ -826,6 +843,85 @@ static        & 2 & 2.994227 & 1.731216 & 1.73 & 86.48 \\
 \grafico{figuras/speedup_dynamic-1024-vs-guided-1024-vs-static.pdf}{Speedup em função do número de threads, com referência ideal $S(T)=T$.}{fig:speedup}
 \grafico{figuras/eficiencia_dynamic-1024-vs-guided-1024-vs-static.pdf}{Eficiência percentual em função do número de threads.}{fig:eficiencia}
 
+\subsection{Linux}\label{sec:linux}
+Os resultados desta seção foram obtidos no ambiente Linux descrito na
+Seção~\ref{sec:ambiente}. Neste ambiente foram medidas duas políticas de
+escalonamento, \texttt{guided(1024)} (a escolhida para a versão final de
+\texttt{fire\_omp.c}) e \texttt{dynamic(1024)}, cada uma em uma rodada
+independente com 10 repetições por combinação de carga e
+$T\in\{2,4,6,8\}$ (mais 10 execuções sequenciais por carga em cada
+rodada). A política \texttt{static} não foi testada no Linux. Para que as
+duas políticas usem a mesma referência, $t_{\mathrm{seq}}$ é a média das
+20 execuções sequenciais de cada carga (10 por rodada), e
+$t_{\mathrm{omp}}$ é a média das 10 repetições de cada política e $T$.
+Os dois binários foram compilados com \texttt{-O3}, e o \emph{checksum} e
+o número de passos foram idênticos em todas as execuções de uma mesma
+carga, sequenciais e paralelas, nas duas rodadas.
+
+\begin{table}[H]
+\centering\small
+\caption{Tempos e métricas de desempenho --- carga pequena (Linux, AMD Ryzen 5), comparando \texttt{dynamic(1024)} e \texttt{guided(1024)} (médias de 10 repetições). Ambos os binários compilados com \texttt{-O3}.}
+\begin{tabular}{lrrrrr}
+\toprule
+\textbf{Schedule} & $T$ & $t_{\mathrm{seq}}$ (s) & $t_{\mathrm{omp}}$ (s) & $S(T)$ & $E(T)$ (\%) \\
+\midrule
+dynamic(1024) & 2 & 0.264346 & 0.183563 & 1.44 & 72.00 \\
+              & 4 & 0.264346 & 0.095877 & 2.76 & 68.93 \\
+              & 6 & 0.264346 & 0.086613 & 3.05 & 50.87 \\
+              & 8 & 0.264346 & 0.079575 & 3.32 & 41.52 \\
+\midrule
+guided(1024)  & 2 & 0.264346 & 0.182449 & 1.45 & 72.44 \\
+              & 4 & 0.264346 & 0.097306 & 2.72 & 67.92 \\
+              & 6 & 0.264346 & 0.091981 & 2.87 & 47.90 \\
+              & 8 & 0.264346 & 0.081095 & 3.26 & 40.75 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[H]
+\centering\small
+\caption{Tempos e métricas de desempenho --- carga média (Linux, AMD Ryzen 5), comparando \texttt{dynamic(1024)} e \texttt{guided(1024)} (médias de 10 repetições). Ambos os binários compilados com \texttt{-O3}.}
+\begin{tabular}{lrrrrr}
+\toprule
+\textbf{Schedule} & $T$ & $t_{\mathrm{seq}}$ (s) & $t_{\mathrm{omp}}$ (s) & $S(T)$ & $E(T)$ (\%) \\
+\midrule
+dynamic(1024) & 2 & 3.087972 & 2.135249 & 1.45 & 72.31 \\
+              & 4 & 3.087972 & 1.129446 & 2.73 & 68.35 \\
+              & 6 & 3.087972 & 1.019873 & 3.03 & 50.46 \\
+              & 8 & 3.087972 & 0.941679 & 3.28 & 40.99 \\
+\midrule
+guided(1024)  & 2 & 3.087972 & 2.133405 & 1.45 & 72.37 \\
+              & 4 & 3.087972 & 1.126572 & 2.74 & 68.53 \\
+              & 6 & 3.087972 & 1.112176 & 2.78 & 46.28 \\
+              & 8 & 3.087972 & 0.949525 & 3.25 & 40.65 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[H]
+\centering\small
+\caption{Tempos e métricas de desempenho --- carga grande (Linux, AMD Ryzen 5), comparando \texttt{dynamic(1024)} e \texttt{guided(1024)} (médias de 10 repetições). Ambos os binários compilados com \texttt{-O3}.}
+\begin{tabular}{lrrrrr}
+\toprule
+\textbf{Schedule} & $T$ & $t_{\mathrm{seq}}$ (s) & $t_{\mathrm{omp}}$ (s) & $S(T)$ & $E(T)$ (\%) \\
+\midrule
+dynamic(1024) & 2 & 10.755516 & 7.827994 & 1.37 & 68.70 \\
+              & 4 & 10.755516 & 4.503688 & 2.39 & 59.70 \\
+              & 6 & 10.755516 & 3.634359 & 2.96 & 49.32 \\
+              & 8 & 10.755516 & 3.373458 & 3.19 & 39.85 \\
+\midrule
+guided(1024)  & 2 & 10.755516 & 7.444430 & 1.44 & 72.24 \\
+              & 4 & 10.755516 & 3.931087 & 2.74 & 68.40 \\
+              & 6 & 10.755516 & 3.842922 & 2.80 & 46.65 \\
+              & 8 & 10.755516 & 3.360784 & 3.20 & 40.00 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\grafico{figuras/tempos_dynamic-1024-vs-guided-1024.pdf}{Tempo em função do número de threads, para as duas políticas e as três cargas (Linux; cor = carga, traço e marcador = schedule).}{fig:tempos-linux}
+\grafico{figuras/speedup_dynamic-1024-vs-guided-1024.pdf}{Speedup em função do número de threads, com referência ideal $S(T)=T$ (Linux).}{fig:speedup-linux}
+\grafico{figuras/eficiencia_dynamic-1024-vs-guided-1024.pdf}{Eficiência percentual em função do número de threads (Linux).}{fig:eficiencia-linux}
+
 \subsection{Efeito da vetorização automática (SIMD) na linha de base sequencial}\label{sec:simd-ingenuo}
 
 A compilação com \texttt{-O3} habilita, além de outras otimizações, a
@@ -934,10 +1030,12 @@ Vale lembrar que a utilização de \texttt{-O3} também pode ser lida como uma p
 Por utilizarmos explicitamente a diretiva \texttt{omp simd} em trechos vetorizáveis do código, achamos interessante trazer a comparação entre um código sequencial compilado sem a flag de otimização e o código paralelo compilado com a flag de otimização, 
 para mostrar a capacidade de melhora de desempenho que a vetorização automática do compilador traz, mesmo sem a utilização de threads.
 
-\textbf{Todas as observações abaixo se referem exclusivamente ao
-ambiente macOS} descrito na Seção~\ref{sec:ambiente}; conclusões sobre o
-comportamento no cluster Linux ficam para a versão revisada deste
-relatório.
+\textbf{Salvo indicação em contrário, as observações abaixo se referem ao
+ambiente macOS} descrito na Seção~\ref{sec:ambiente}. No ambiente Linux
+(Seção~\ref{sec:linux}) foram medidas \texttt{guided(1024)} e
+\texttt{dynamic(1024)}, com 10 repetições por ponto; a análise
+correspondente está no parágrafo \emph{Resultados no Linux}, ao final
+desta seção.
 
 \textbf{Efeito da fusão de barreiras e do pré-cálculo dos pesos.} Uma
 rodada anterior deste relatório, no mesmo ambiente e com o mesmo script,
@@ -1000,8 +1098,67 @@ observada é de $\approx\!7\%$ em $S(T)$) e por nunca perder para
 \texttt{static}; mas uma conclusão mais forte entre
 \texttt{guided(1024)} e \texttt{dynamic(1024)} exigiria mais rodadas
 completas do que as disponíveis nesta versão do relatório --
-idealmente em outro ambiente, como o cluster Linux.
+idealmente em outro ambiente. O Linux (Seção~\ref{sec:linux}) traz uma
+segunda comparação entre essas duas políticas, com 10 repetições por
+ponto em cada uma, embora em rodadas separadas e sem \texttt{static}.
 
+
+\textbf{Resultados no Linux.} No ambiente Linux (AMD Ryzen 5, 8
+núcleos, Seção~\ref{sec:linux}), com ambos os binários em \texttt{-O3},
+as duas políticas seguem o mesmo padrão geral: o speedup cresce com $T$
+nas três cargas e a eficiência cai de $\approx\!72\%$ em $T=2$ para
+$40$--$42\%$ em $T=8$, com $S(8)$ entre $3.19$ e $3.32$. Excluídos os
+pontos com \emph{outliers} discutidos a seguir, as três cargas se
+comportam de forma praticamente idêntica: para cada $T$ e política, os
+speedups diferem em no máximo $0.13$ entre pequena, média e grande, ou
+seja, o ganho por paralelização não depende do tamanho da carga nos
+tamanhos testados.
+
+Na carga grande, \texttt{dynamic(1024)} apresenta \emph{outliers} em
+$T=2$ (repetições 4 e 5: $8.76$ s e $8.73$ s, contra $7.52$--$7.68$ s nas
+demais) e em $T=4$ (repetições 2, 3 e 4: $6.00$ s, $6.61$ s e $4.74$ s,
+contra $3.93$--$3.97$ s nas outras sete). Isso eleva as médias ($7.828$ s e
+$4.504$ s; coeficientes de variação de $6\%$ e $22\%$) e produz os
+valores atípicos $S(2)=1.37$ e $S(4)=2.39$ da tabela; pelas medianas
+($7.656$ s e $3.963$ s) os valores seriam $S(2)=1.40$ e $S(4)=2.71$,
+alinhados com o restante. A concentração em poucas repetições sugere
+interferência transitória externa (outros processos na máquina) e não um
+efeito da política, mas isso não foi verificado.
+
+A diferença entre as políticas aparece em $T=6$. Com
+\texttt{dynamic(1024)}, $S(6)$ fica entre $2.96$ e $3.05$ nas três
+cargas, contra $2.78$--$2.87$ de \texttt{guided(1024)} (vantagem de
+$6$ a $9\%$), e a eficiência entre $49$ e $51\%$, contra $46$--$48\%$. A
+diferença é consistente dentro das rodadas: em cada carga, a repetição
+mais lenta de \texttt{dynamic(1024)} em $T=6$ ($3.649$ s, $1.026$ s e
+$0.0868$ s nas cargas grande, média e pequena) é mais rápida que a mais
+rápida de \texttt{guided(1024)} ($3.793$ s, $1.083$ s e $0.0897$ s). O
+platô entre $T=4$ e $T=6$ é, por isso, pronunciado sob
+\texttt{guided(1024)} (o tempo cai de $1$ a $6\%$: por exemplo, de
+$1.127$ s para $1.112$ s na carga média) e menor sob
+\texttt{dynamic(1024)} ($8$ a $10\%$, usando a mediana na carga grande),
+embora em ambos bem abaixo da queda de $33\%$ que um ganho ideal de $4$
+para $6$ threads teria. Em $T=8$ as duas políticas praticamente
+empatam ($S(8)$ de $3.19$ contra $3.20$ na grande, $3.28$ contra $3.25$
+na média e $3.32$ contra $3.26$ na pequena, diferenças de até $2\%$).
+
+Esse resultado deve ser lido com cautela: as duas políticas foram
+medidas em rodadas separadas, então a variação entre sessões pode contribuir para a diferença em $T=6$, e no macOS a ordem
+entre as duas políticas já se inverteu entre rodadas. A direção observada
+coincide com a da rodada mais recente do macOS (\texttt{dynamic(1024)} à
+frente em $T$ alto), mas aqui a vantagem se concentra em $T=6$, e não
+em $T=8$. Vale notar que a desvantagem de \texttt{guided(1024)} em
+$T=6$ chega a $\approx\!8\%$ em $S(T)$ na carga média ($2.78$ contra
+$3.03$), acima dos $\approx\!7\%$ citados acima como pior caso no macOS.
+Em relação ao macOS, o padrão qualitativo é o mesmo (eficiência
+decrescente e ganho sublinear em $T=8$), mas o speedup em $T=8$ é menor
+no Linux (cerca de $3.2$--$3.3$, contra $3.48$--$3.99$ para as mesmas
+duas políticas no macOS) e a eficiência em $T=2$ também ($\approx\!72\%$,
+contra $79$--$86\%$). Os tempos absolutos não são comparáveis entre os
+ambientes, pois as máquinas, os compiladores e os sistemas diferem; a
+comparação vale apenas para $S(T)$ e $E(T)$. Este trabalho não isola a
+causa do platô, e por isso registra
+o comportamento sem atribuí-lo a um mecanismo específico.
 
 \textbf{Consistência dos resultados.} Como reportado na
 Seção~\ref{sec:validacao}, o checksum e a quantidade de passos
@@ -1048,6 +1205,19 @@ diminuindo ao longo das otimizações deste trabalho, ficou dentro do
 ruído de medição especificamente para \texttt{guided(1024)}
 ($S(8)=3.73$ contra $3.77$), embora ainda mensurável sob
 \texttt{dynamic(1024)} e \texttt{static}.
+
+No ambiente Linux avaliado (AMD Ryzen 5, 8 núcleos), foram medidas
+\texttt{guided(1024)} e \texttt{dynamic(1024)}, cada uma com 10
+repetições por ponto, também com ambos os binários em \texttt{-O3} e com
+\emph{checksum} idêntico em todas as execuções de cada carga. A versão
+OpenMP atingiu speedups de até $3.32\times$ em $T=8$ (eficiência de
+$40$--$42\%$, contra $\approx\!72\%$ em $T=2$), praticamente sem diferença
+entre as três cargas. As duas políticas empataram em $T=8$ e em $T\le4$
+(exceto por \emph{outliers} de \texttt{dynamic(1024)} na carga grande),
+mas em $T=6$ \texttt{dynamic(1024)} ficou $6$ a $9\%$ à frente
+($S(6)\approx3.0$ contra $2.78$--$2.87$), diferença consistente entre as
+repetições, com \texttt{guided(1024)} apresentando um platô entre $T=4$ e
+$T=6$.
 
 Um achado deste trabalho, tratado em detalhe na
 Seção~\ref{sec:simd-ingenuo}, é de natureza metodológica: comparar a
