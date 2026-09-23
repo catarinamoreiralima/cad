@@ -1,6 +1,36 @@
+#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 199506L
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
+#include <limits.h>
 #include <omp.h>
+
+// rand_r e' POSIX e nao existe no MinGW/Windows; no macOS existe, mas usa um
+// algoritmo diferente do da glibc e gera outra floresta para a mesma seed.
+// Nesses dois casos usa-se esta versao de compatibilidade, que reproduz o
+// algoritmo do rand_r da glibc, mantendo a mesma floresta e checksum do Linux.
+// Nos demais sistemas POSIX, usa-se a funcao nativa.
+static int fire_rand_r(unsigned int *seed) {
+#if defined(_WIN32) || defined(__APPLE__)
+    unsigned int next = *seed;
+    unsigned int resultado;
+
+    next = next * 1103515245U + 12345U;
+    resultado = (next / 65536U) % 2048U;
+    next = next * 1103515245U + 12345U;
+    resultado = (resultado << 10) ^ ((next / 65536U) % 1024U);
+    next = next * 1103515245U + 12345U;
+    resultado = (resultado << 10) ^ ((next / 65536U) % 1024U);
+
+    *seed = next;
+    return (int)resultado;
+#else
+    return rand_r(seed);
+#endif
+}
 
 // Representa um foco inicial de incendio (celula que comeca em chamas).
 typedef struct {
@@ -37,7 +67,13 @@ typedef struct {
     int *tempo_atual;     // tempo de queima restante da celula no passo atual
     int *proximo_tempo;   // tempo de queima calculado para o proximo passo
     int *ativacao;        // ativacao[idx] = -1 (fora de zona) ou o passo em que a zona ativa essa celula
+
+    int pesos[8];          // peso pv de cada uma das 8 direcoes de Moore, pre-calculado uma unica vez
 } Simulacao;
+
+// Deslocamentos fixos dos 8 vizinhos de Moore (ordem usada por potencial_ignicao/precalcular_pesos).
+static const int DL[8] = {-1, -1, -1,  0, 0,  1, 1, 1};
+static const int DC[8] = {-1,  0,  1, -1, 1, -1, 0, 1};
 
 // Le e valida o arquivo de entrada (secoes 4 e 5 do enunciado).
 // Encerra o programa com EXIT_FAILURE em qualquer inconsistencia.
@@ -58,6 +94,14 @@ void ler_entrada(const char *arquivo_entrada, Simulacao *sim) {
 
     if (sim->L <= 0 || sim->C <= 0 || sim->P < 0 || sim->T <= 0 || sim->limiar <= 0) {
         fprintf(stderr, "Erro: Parametros gerais invalidos.\n");
+        exit(EXIT_FAILURE);
+    }
+
+    // Todos os indices da simulacao sao int. Rejeitar uma matriz cujo numero
+    // de celulas nao cabe nesse tipo evita overflow em L*C e nos indices.
+    long long total_celulas = (long long)sim->L * (long long)sim->C;
+    if (total_celulas > INT_MAX || (size_t)total_celulas > SIZE_MAX / sizeof(int)) {
+        fprintf(stderr, "Erro: Dimensoes da matriz excedem o limite suportado.\n");
         exit(EXIT_FAILURE);
     }
 
@@ -94,8 +138,20 @@ void ler_entrada(const char *arquivo_entrada, Simulacao *sim) {
         exit(EXIT_FAILURE);
     }
 
-    sim->focos = (Foco *)malloc(sim->F * sizeof(Foco));
-    sim->zonas = (ZonaContencao *)malloc(sim->Z * sizeof(ZonaContencao));
+    if ((size_t)sim->F > SIZE_MAX / sizeof(Foco) ||
+        (size_t)sim->Z > SIZE_MAX / sizeof(ZonaContencao)) {
+        fprintf(stderr, "Erro: Quantidade de focos ou zonas excede o limite suportado.\n");
+        exit(EXIT_FAILURE);
+    }
+
+    sim->focos = malloc((size_t)sim->F * sizeof(*sim->focos));
+    sim->zonas = malloc((size_t)sim->Z * sizeof(*sim->zonas));
+    if ((sim->F > 0 && sim->focos == NULL) || (sim->Z > 0 && sim->zonas == NULL)) {
+        fprintf(stderr, "Erro: Falha na alocacao de focos ou zonas.\n");
+        free(sim->focos);
+        free(sim->zonas);
+        exit(EXIT_FAILURE);
+    }
 
     // proximas F linhas: focos iniciais de incendio
     for (int i = 0; i < sim->F; i++) {
@@ -166,15 +222,15 @@ void ler_entrada(const char *arquivo_entrada, Simulacao *sim) {
 // Aloca todos os vetores de tamanho L*C usados pela simulacao.
 // Nao entra no trecho cronometrado (secao 12).
 void alocar_estruturas(Simulacao *sim) {
-    int n = sim->L * sim->C;
+    size_t n = (size_t)sim->L * (size_t)sim->C;
 
-    sim->cobertura = (int *)malloc(n * sizeof(int));
-    sim->umidade = (int *)malloc(n * sizeof(int));
-    sim->estado_atual = (int *)malloc(n * sizeof(int));
-    sim->proximo_estado = (int *)malloc(n * sizeof(int));
-    sim->tempo_atual = (int *)malloc(n * sizeof(int));
-    sim->proximo_tempo = (int *)malloc(n * sizeof(int));
-    sim->ativacao = (int *)malloc(n * sizeof(int));
+    sim->cobertura = malloc(n * sizeof(*sim->cobertura));
+    sim->umidade = malloc(n * sizeof(*sim->umidade));
+    sim->estado_atual = malloc(n * sizeof(*sim->estado_atual));
+    sim->proximo_estado = malloc(n * sizeof(*sim->proximo_estado));
+    sim->tempo_atual = malloc(n * sizeof(*sim->tempo_atual));
+    sim->proximo_tempo = malloc(n * sizeof(*sim->proximo_tempo));
+    sim->ativacao = malloc(n * sizeof(*sim->ativacao));
 
     if (sim->cobertura == NULL || sim->umidade == NULL ||
         sim->estado_atual == NULL || sim->proximo_estado == NULL ||
@@ -190,26 +246,30 @@ void alocar_estruturas(Simulacao *sim) {
 // explicitamente que essa geracao seja feita por uma unica thread, e ela
 // nao faz parte do trecho cronometrado.
 void gerar_floresta(Simulacao *sim) {
+    // rand_r exige unsigned int*. Usar uma variavel do tipo correto evita a
+    // violacao de aliasing causada por converter int* para unsigned int*.
+    unsigned int seed = (unsigned int)sim->seed;
+
     for (int linha = 0; linha < sim->L; linha++) {
         for (int coluna = 0; coluna < sim->C; coluna++) {
             int idx = linha * sim->C + coluna;
 
-            // cast necessario: rand_r espera unsigned int*, seed e' declarado como int
             // cobertura: 0-9 agua, 10-19 solo exposto, 20-54 rasteira, 55-99 floresta (Quadro 6.2.1)
-            int valor = rand_r((unsigned int *)&sim->seed) % 100;
+            int valor = fire_rand_r(&seed) % 100;
             if (valor < 10) sim->cobertura[idx] = 0;
             else if (valor < 20) sim->cobertura[idx] = 1;
             else if (valor < 55) sim->cobertura[idx] = 2;
             else sim->cobertura[idx] = 3;
 
             // umidade gerada logo em seguida, ainda na mesma celula (ordem exigida pelo enunciado)
-            sim->umidade[idx] = rand_r((unsigned int *)&sim->seed) % 101;
+            sim->umidade[idx] = fire_rand_r(&seed) % 101;
 
             // agua/solo exposto = nao combustivel (0); rasteira/floresta comecam intactas (1)
             sim->estado_atual[idx] = (sim->cobertura[idx] <= 1) ? 0 : 1;
             sim->tempo_atual[idx] = 0;
         }
     }
+
 }
 
 // Aplica os focos iniciais de incendio (secao 6.5): marca as celulas como
@@ -233,8 +293,8 @@ void aplicar_focos(Simulacao *sim) {
 // nenhuma zona, ou o passo de ativacao caso contrario. Em zonas sobrepostas,
 // prevalece o menor passo de ativacao.
 void construir_mapa_ativacao(Simulacao *sim) {
-    int n = sim->L * sim->C;
-    for (int i = 0; i < n; i++) {
+    long long n = (long long)sim->L * (long long)sim->C;
+    for (long long i = 0; i < n; i++) {
         sim->ativacao[i] = -1;
     }
 
@@ -242,7 +302,7 @@ void construir_mapa_ativacao(Simulacao *sim) {
         ZonaContencao *zona = &sim->zonas[z];
         for (int linha = zona->linha_inicial; linha <= zona->linha_final; linha++) {
             for (int coluna = zona->coluna_inicial; coluna <= zona->coluna_final; coluna++) {
-                int idx = linha * sim->C + coluna;
+                long long idx = (long long)linha * sim->C + coluna;
                 if (sim->ativacao[idx] == -1 || zona->passo_ativacao < sim->ativacao[idx]) {
                     sim->ativacao[idx] = zona->passo_ativacao;
                 }
@@ -251,12 +311,32 @@ void construir_mapa_ativacao(Simulacao *sim) {
     }
 }
 
+// Pre-calcula o peso pv de cada uma das 8 direcoes de Moore (secao 8): esses
+// valores dependem apenas de vento_linha/vento_coluna/intensidade, fixos
+// durante toda a simulacao, entao calcula-los uma unica vez evita repetir a
+// mesma conta a cada vizinho, de cada celula intacta, em cada passo.
+// Chamada em main() logo apos ler_entrada, fora do trecho cronometrado.
+void precalcular_pesos(Simulacao *sim) {
+    for (int k = 0; k < 8; k++) {
+        int prop_linha = -DL[k];
+        int prop_coluna = -DC[k];
+        int ortogonal = (abs(prop_linha) + abs(prop_coluna) == 1);
+        int p_basico = ortogonal ? 10 : 7;
+
+        int A = prop_linha * sim->vento_linha + prop_coluna * sim->vento_coluna;
+        int pv = p_basico + sim->intensidade * A;
+        if (pv < 1) pv = 1;
+
+        sim->pesos[k] = pv;
+    }
+}
+
 // Conta as celulas inicialmente combustiveis (vegetacao rasteira + floresta),
 // usada como base para os percentuais queimado/protegido (secao 10).
 int contar_combustiveis_iniciais(Simulacao *sim) {
-    int n = sim->L * sim->C;
+    long long n = (long long)sim->L * (long long)sim->C;
     int total = 0;
-    for (int i = 0; i < n; i++) {
+    for (long long i = 0; i < n; i++) {
         if (sim->cobertura[i] == 2 || sim->cobertura[i] == 3) total++;
     }
     return total;
@@ -265,14 +345,14 @@ int contar_combustiveis_iniciais(Simulacao *sim) {
 // Conta quantas celulas terminaram a simulacao em cada um dos 5 estados.
 void contar_estados_finais(Simulacao *sim, int *nao_combustiveis, int *intactas,
                             int *em_chamas, int *queimadas, int *contencao) {
-    int n = sim->L * sim->C;
+    long long n = (long long)sim->L * (long long)sim->C;
     *nao_combustiveis = 0;
     *intactas = 0;
     *em_chamas = 0;
     *queimadas = 0;
     *contencao = 0;
 
-    for (int i = 0; i < n; i++) {
+    for (long long i = 0; i < n; i++) {
         switch (sim->estado_atual[i]) {
             case 0: (*nao_combustiveis)++; break;
             case 1: (*intactas)++; break;
@@ -317,53 +397,26 @@ void imprimir_resultado(int passos, int nao_combustiveis, int intactas, int em_c
     printf("tempo: %.6f\n", tempo);
 }
 
-// Ativa, no inicio do passo "passo", as zonas de contencao programadas para
-// esse passo (secao 7.2 / Quadro 7.2.1). Cada iteracao so le ativacao[i]
-// (fixo) e escreve em estado_atual[i]: nao ha dependencia entre celulas,
-// entao o laco e' paralelizavel sem risco de corrida.
-// Chamada de dentro da regiao paralela persistente (diretiva "orfa").
-void ativar_zonas(Simulacao *sim, int passo) {
-    int n = sim->L * sim->C;
-    #pragma omp for schedule(runtime)
-    for (int i = 0; i < n; i++) {
-        if (sim->ativacao[i] == passo && sim->estado_atual[i] == 1) {
-            sim->estado_atual[i] = 4;
-        }
-    }
-}
-
 // Calcula o potencial de ignicao I de uma celula intacta (secao 8).
 // Reescrito de forma "branchless" (sem continue) sobre os 8 vizinhos de
 // Moore pre-calculados, para permitir vetorizacao com omp simd.
-int potencial_ignicao(Simulacao *sim, int idx) {
-    static const int DL[8] = {-1, -1, -1,  0, 0,  1, 1, 1};
-    static const int DC[8] = {-1,  0,  1, -1, 1, -1, 0, 1};
-
-    int linha = idx / sim->C;
-    int coluna = idx % sim->C;
+int potencial_ignicao(Simulacao *sim, long long idx) {
+    long long linha = idx / sim->C;
+    long long coluna = idx % sim->C;
     int S = 0;
 
     #pragma omp simd reduction(+:S)
     for (int k = 0; k < 8; k++) {
-        int vl = linha + DL[k];
-        int vc = coluna + DC[k];
+        long long vl = linha + DL[k];
+        long long vc = coluna + DC[k];
         int dentro = (vl >= 0 && vl < sim->L && vc >= 0 && vc < sim->C);
         // indice "seguro": se o vizinho estiver fora da matriz, reaproveita
         // idx (sempre valido) em vez de acessar fora dos limites; o fator
         // 'dentro' abaixo garante que a contribuicao desse vizinho seja zero
-        int vidx = dentro ? (vl * sim->C + vc) : idx;
+        long long vidx = dentro ? (vl * sim->C + vc) : idx;
         int em_chamas = dentro && (sim->estado_atual[vidx] == 2);
 
-        int prop_linha = -DL[k];
-        int prop_coluna = -DC[k];
-        int ortogonal = (abs(prop_linha) + abs(prop_coluna) == 1);
-        int p_basico = ortogonal ? 10 : 7;
-
-        int A = prop_linha * sim->vento_linha + prop_coluna * sim->vento_coluna;
-        int pv = p_basico + sim->intensidade * A;
-        if (pv < 1) pv = 1;
-
-        S += em_chamas * pv;
+        S += em_chamas * sim->pesos[k];
     }
 
     int fator = (sim->cobertura[idx] == 2) ? 8 : 12;
@@ -376,7 +429,7 @@ int potencial_ignicao(Simulacao *sim, int idx) {
 // celula so escreve na sua propria posicao (sem dependencia entre indices).
 // Retorna 1 se houve uma nova ignicao nesta celula; "ficou_em_chamas" indica
 // se a celula estara em chamas no proximo passo.
-int atualizar_celula(Simulacao *sim, int idx, int *ficou_em_chamas) {
+int atualizar_celula(Simulacao *sim, long long idx, int *ficou_em_chamas) {
     int estado = sim->estado_atual[idx];
     int ignizou = 0;
     *ficou_em_chamas = 0;
@@ -417,8 +470,8 @@ int atualizar_celula(Simulacao *sim, int idx, int *ficou_em_chamas) {
 // chamas logo apos a inicializacao); dentro do laco, "tem_chamas" ja vem
 // calculado por reducao em calcular_proximo_estado.
 int existe_em_chamas(Simulacao *sim) {
-    int n = sim->L * sim->C;
-    for (int i = 0; i < n; i++) {
+    long long n = (long long)sim->L * (long long)sim->C;
+    for (long long i = 0; i < n; i++) {
         if (sim->estado_atual[i] == 2) return 1;
     }
     return 0;
@@ -441,43 +494,54 @@ void trocar_matrizes(Simulacao *sim) {
 // destruir threads a cada passo) e executa todo o laco da simulacao dentro
 // dela. A ordem de execucao de cada passo segue a secao 7.1: 1. ativar
 // zonas; 2. calcular proximo estado; 3. estatisticas; 4. trocar matrizes;
-// 5. verificar condicao de parada — os passos 3, 4 e 5 sao feitos por uma
+// 5. verificar condicao de parada. A ativacao de zona (passo 1) e' inlineada
+// no topo do corpo do "omp for" principal (passo 2): como ela so transiciona
+// INTACTA(1)->CONTENCAO(4) e nunca toca em EM_CHAMAS(2), a ordem entre
+// ativacao e calculo de potencial de ignicao e' indiferente, o que elimina
+// uma barreira inteira por passo. Os passos 3, 4 e 5 sao feitos por uma
 // unica thread (single), pois sao O(1) e mexem em variaveis de controle
 // compartilhadas (passo, continua, total, pico).
 void simular(Simulacao *sim, int *passos_executados, int *total_ignicoes,
              int *pico_passo, int *pico_qtd) {
-    int n = sim->L * sim->C;
+    long long n = (long long)sim->L * (long long)sim->C;
     int passo = 0;
     int total = 0;
     int p_passo = -1; // -1 indica "nenhuma ignicao ocorreu" (secao 10)
     int p_qtd = 0;
-    // acumuladores do passo: precisam ser compartilhados (nao locais ao
-    // laco "omp for") para que a clausula reduction seja valida, e
-    // zerados a cada passo antes da reducao (o valor final da reducao
-    // combina com o valor que a variavel ja tinha antes do laco).
+    // Acumuladores compartilhados usados pelas reducoes. Eles comecam em zero
+    // e sao zerados novamente, pela thread do single final, antes do proximo
+    // passo. Assim evitamos uma regiao single e uma barreira extras por passo.
     int ignicoes_no_passo = 0;
     int tem_chamas = 0;
 
     // se nao houver nenhuma celula em chamas logo apos a inicializacao, ou
     // se P for 0, nenhum passo e' executado (secao 9)
     int continua = (sim->P > 0) && existe_em_chamas(sim);
+    if (!continua) {
+        *passos_executados = 0;
+        *total_ignicoes = 0;
+        *pico_passo = -1;
+        *pico_qtd = 0;
+        return;
+    }
 
     #pragma omp parallel num_threads(sim->T) default(none) \
         shared(sim, n, passo, continua, total, p_passo, p_qtd, ignicoes_no_passo, tem_chamas)
     {
         while (continua) {
-            ativar_zonas(sim, passo); // 1. ativar zonas programadas para este passo
-
-            #pragma omp single
-            {
-                ignicoes_no_passo = 0;
-                tem_chamas = 0;
-            } // barreira implicita: todas as threads veem os acumuladores zerados
-
+            // 1. ativar zonas programadas para este passo (inlineado) e
             // 2. calcular proximo estado (cada idx e' independente; so os
             // contadores agregados precisam de reducao, sem critical/atomic)
-            #pragma omp for schedule(runtime) reduction(+:ignicoes_no_passo) reduction(||:tem_chamas)
-            for (int idx = 0; idx < n; idx++) {
+            // A atualizacao tem custo irregular (celulas intactas examinam
+            // oito vizinhos; as demais sao baratas). Guided equilibra esse
+            // custo sem o overhead extremo de dynamic,1; o bloco minimo
+            // ainda preserva boa localidade de memoria.
+            #pragma omp for schedule(guided, 1024) reduction(+:ignicoes_no_passo) reduction(||:tem_chamas)
+            for (long long idx = 0; idx < n; idx++) {
+                if (sim->ativacao[idx] == passo && sim->estado_atual[idx] == 1) {
+                    sim->estado_atual[idx] = 4;
+                }
+
                 int ficou_em_chamas;
                 int ignizou = atualizar_celula(sim, idx, &ficou_em_chamas);
                 ignicoes_no_passo += ignizou;
@@ -495,6 +559,12 @@ void simular(Simulacao *sim, int *passos_executados, int *total_ignicoes,
                 trocar_matrizes(sim); // 4. trocar as matrizes
                 passo++;
                 continua = (passo < sim->P) && tem_chamas; // 5. condicao de parada
+
+                // Prepara as variaveis de reducao para o proximo passo. A
+                // barreira implicita do single publica os zeros antes de as
+                // threads voltarem ao inicio do while.
+                ignicoes_no_passo = 0;
+                tem_chamas = 0;
             } // barreira implicita no fim do single: todas as threads veem o novo 'continua'
         }
     }
@@ -528,6 +598,7 @@ int main(int argc, char *argv[]) {
 
     // preparacao da simulacao: nada disto entra no trecho cronometrado (secao 12)
     ler_entrada(argv[1], &sim);
+    precalcular_pesos(&sim);
     alocar_estruturas(&sim);
     gerar_floresta(&sim);
     aplicar_focos(&sim);
@@ -536,6 +607,10 @@ int main(int argc, char *argv[]) {
     int combustiveis_iniciais = contar_combustiveis_iniciais(&sim);
 
     int passos_executados, total_ignicoes, pico_passo, pico_qtd;
+
+    // Garante que a regiao solicite exatamente T threads mesmo se o ambiente
+    // externo tiver habilitado ajuste dinamico do tamanho da equipe.
+    omp_set_dynamic(0);
 
     double t_inicio = omp_get_wtime();
     simular(&sim, &passos_executados, &total_ignicoes, &pico_passo, &pico_qtd);
