@@ -42,7 +42,8 @@
 João Ricardo de Almeida Lustosa & 15453697 \\
 Catarina Moreira Lima & 8957221 \\
 Larissa Pires Moreira Rocha Duarte & 15522358 \\
-{Nome completo} & {Número USP} \\
+Gabriel Phelippe Prado & 15453730 \\
+Frederico Scheffel Oliveira & 15452718\\
 \end{tabular}
 \vfill
 São Carlos\par
@@ -505,9 +506,7 @@ uma barreira inteira por passo (de 3 para 2) sem alterar o checksum nem
 a contagem de passos (Seção~\ref{sec:validacao}).
 
 A atualização das células foi reorganizada na função
-\texttt{atualizar\_celula}, que processa uma única posição e não contém
-diretivas OpenMP; o laço que a chama é o que recebe o \texttt{omp for}
-(agora com a ativação inlineada em seu corpo).
+\texttt{atualizar\_celula}, que processa uma única posição.
 Além do indicador de nova ignição, a função informa se a célula estará
 em chamas no próximo estado. Esses valores são combinados por duas
 reduções: soma para as novas ignições e disjunção lógica para a
@@ -584,7 +583,7 @@ passo, e ele governa tanto a ativação inlineada quanto a atualização da
 célula; a política de escalonamento escolhida precisa, portanto,
 equilibrar o custo do laço como um todo. Esse custo por iteração é
 irregular: a comparação de ativação é praticamente uniforme, mas
-\texttt{atualizar\_celula} não é -- células intactas calculam o
+\texttt{atualizar\_celula} não é. As células intactas calculam o
 potencial sobre oito vizinhos, enquanto as demais apenas copiam ou
 decrementam valores. A distribuição desse custo muda ao longo da
 simulação, à medida que a frente de fogo avança e as regiões queimadas e
@@ -624,19 +623,9 @@ Para cada carga, o checksum e a quantidade de passos executados
 coincidiram nas 150 execuções (10 sequenciais e $4\times10$ OpenMP por
 política, nas três políticas de escalonamento, com $T\in\{2,4,6,8\}$),
 confirmando que o resultado independe da quantidade de threads e da
-política de escalonamento, conforme exigido pelo enunciado, e que nenhuma
-das três otimizações desta rodada (fusão de barreiras da
-Seção~\ref{sec:transicoes}, pesos pré-calculados e índices
-\texttt{long long}) alterou o resultado da simulação -- apenas seu
-tempo de execução (Seção~\ref{sec:resultados}). Além dessas 450
-execuções cronometradas, a segurança da fusão de barreiras foi
-verificada manualmente com $T=8$ e $T=16$ (acima do número de núcleos da
-máquina) sobre a carga grande, repetindo a execução cinco vezes em cada
-caso sem nenhuma variação de checksum -- um indício de que a leitura
-sem sincronização de \texttt{estado\_atual} entre a ativação inlineada e
-a avaliação de vizinhos (Seção~\ref{sec:transicoes}) não introduz
-resultados observáveis diferentes, mesmo com mais threads do que
-núcleos de desempenho disponíveis. Nas três cargas a simulação consumiu
+política de escalonamento, conforme exigido pelo enunciado.
+
+Nas três cargas a simulação consumiu
 todos os $P$ passos configurados, isto é, o incêndio não se extinguiu
 antes do limite definido na Tabela de cargas. As entradas com zero
 passos, sem focos e com zonas de contenção sobrepostas foram
@@ -1078,9 +1067,9 @@ intactas e não intactas, mas conforme $T$ cresce, os blocos ficam
 menores e mais sensíveis a onde a frente de fogo está concentrada
 naquele passo, e o desbalanceamento resultante deixa de ser compensado
 pelo overhead (que \texttt{static} praticamente não tem). Esse resultado
-é robusto: reproduziu-se em duas rodadas independentes. Já a diferença
+é robusto: reproduziu-se em ambos os ambientes das rodadas independentes. Já a diferença
 entre \texttt{guided(1024)} e \texttt{dynamic(1024)} \emph{não} se
-reproduziu: nesta rodada, \texttt{dynamic(1024)} fica à frente de
+reproduziu: nesta rodada, no cluster, \texttt{dynamic(1024)} fica à frente de
 \texttt{guided(1024)} em praticamente todos os pontos medidos (por
 exemplo, $S(8)=3.99$ contra $3.77$ na carga média, e $S(8)=3.64$ contra
 $3.48$ na pequena), com exceção de um empate técnico na carga grande em
@@ -1103,7 +1092,7 @@ segunda comparação entre essas duas políticas, com 10 repetições por
 ponto em cada uma, embora em rodadas separadas e sem \texttt{static}.
 
 
-\textbf{Resultados no Linux.} No ambiente Linux (AMD Ryzen 5, 8
+\textbf{Resultados no cluster Linux.} No ambiente Linux (AMD Ryzen 5, 8
 núcleos, Seção~\ref{sec:linux}), com ambos os binários em \texttt{-O3},
 as duas políticas seguem o mesmo padrão geral: o speedup cresce com $T$
 nas três cargas e a eficiência cai de $\approx\!72\%$ em $T=2$ para
@@ -1167,7 +1156,7 @@ para $T\in\{2,4,6,8\}$, nas três cargas e nas três políticas de
 escalonamento, confirmando que nem a paralelização, nem a escolha de
 schedule, nem as otimizações desta rodada (fusão de barreiras, pesos
 pré-calculados, índices \texttt{long long}) alteram o resultado da
-simulação --- apenas o seu tempo de execução, exatamente como esperado
+simulação, apenas o seu tempo de execução, exatamente como esperado
 da modelagem com atualização síncrona e reduções
 (Seção~\ref{sec:transicoes}).
 
