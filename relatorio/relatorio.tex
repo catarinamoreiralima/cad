@@ -9,6 +9,7 @@
 \usepackage{booktabs,tabularx,array}
 \usepackage{graphicx,xcolor}
 \usepackage{listings}
+\usepackage{float}
 \usepackage[hidelinks]{hyperref}
 \setlength{\parskip}{0.35em}
 \setlength{\parindent}{1.25cm}
@@ -16,7 +17,7 @@
 \lstset{basicstyle=\ttfamily\small,breaklines=true,frame=single,
   columns=fullflexible,keepspaces=true,showstringspaces=false}
 \newcommand{\grafico}[3]{
-  \begin{figure}[htbp]
+  \begin{figure}[H]
     \centering
     \IfFileExists{#1}{\includegraphics[width=0.9\linewidth]{#1}}{
       \fbox{\parbox[c][3cm][c]{0.85\linewidth}{\mbox{}}}}
@@ -140,7 +141,7 @@ São exigidos $L,C,T,\mathrm{LIMIAR}>0$, $P,F,Z\geq0$,
 componentes do vento em $\{-1,0,1\}$, direção diferente de $(0,0)$ e
 intensidade entre 0 e 5. Os focos devem ser distintos, internos à grade e
 posicionados sobre células combustíveis. As zonas devem ter limites
-ordenados e internos à grade, com $0\leq p_{\mathrm{ativação}}<P$.
+ordenados e internos à grade, com $0\leq p_{\text{ativação}}<P$.
 Consequentemente, não há passo de ativação válido quando $P=0$.
 
 As duas aplicações recebem somente o caminho do arquivo de entrada:
@@ -161,7 +162,7 @@ depois, \texttt{rand\_r(\&seed) \% 101} para determinar a umidade.
 Preservar essa ordem é necessário para que as versões recebam a mesma
 configuração inicial no ambiente experimental.
 
-\begin{table}[htbp]
+\begin{table}[H]
 \centering
 \caption{Coberturas e parâmetros do modelo. As proporções são as da regra de geração, não contagens exatas de cada matriz.}
 \label{tab:cobertura}
@@ -190,7 +191,7 @@ chamas (2), queimada (3) ou contenção (4). Cobertura e estado são conceitos
 distintos: a cobertura identifica o material da célula; o estado indica
 sua situação na evolução do incêndio.
 
-\begin{table}[htbp]
+\begin{table}[H]
 \centering
 \caption{Vetores utilizados para representar a floresta.}
 \label{tab:vetores}
@@ -318,7 +319,7 @@ pelas estruturas \texttt{Foco} e \texttt{ZonaContencao}. A
 Tabela~\ref{tab:funcoes-seq} resume as funções e indica quais pertencem
 ao trecho cronometrado.
 
-\begin{table}[htbp!]
+\begin{table}[H]
 \centering
 \caption{Funções da versão sequencial.}
 \label{tab:funcoes-seq}
@@ -327,6 +328,7 @@ ao trecho cronometrado.
 \textbf{Função} & \textbf{Responsabilidade} & \textbf{Cronometrada} \\
 \midrule
 \texttt{ler\_entrada} & Leitura e validação do arquivo e dos limites de tamanho. & Não \\
+\texttt{precalcular\_pesos} & Pré-cálculo do peso $P_v$ de cada uma das 8 direções de Moore. & Não \\
 \texttt{alocar\_estruturas} & Alocação dos sete vetores de tamanho $LC$. & Não \\
 \texttt{gerar\_floresta} & Sorteio da cobertura e da umidade; estado inicial. & Não \\
 \texttt{aplicar\_focos} & Marcação dos focos e validação da cobertura. & Não \\
@@ -347,11 +349,27 @@ A leitura verifica o retorno de cada \texttt{fscanf} e aplica as
 restrições da Seção~\ref{sec:entrada}, encerrando o programa com \texttt{EXIT\_FAILURE}
 diante de qualquer inconsistência. A verificação de que os focos estão
 sobre células combustíveis só é possível após a geração da floresta e,
-por isso, é feita em \texttt{aplicar\_focos}. Como todos os índices da
-simulação são do tipo \texttt{int}, a leitura também rejeita grades em
-que $LC$ excede \texttt{INT\_MAX} ou em que o tamanho em bytes dos
-vetores não cabe em \texttt{size\_t}; verificação análoga é aplicada às
-quantidades de focos e zonas. Todas as alocações têm o retorno conferido.
+por isso, é feita em \texttt{aplicar\_focos}. $L$, $C$ e as coordenadas
+de focos e zonas continuam do tipo \texttt{int}, e a leitura rejeita
+grades em que $LC$ excede \texttt{INT\_MAX} ou em que o tamanho em bytes
+dos vetores não cabe em \texttt{size\_t}; verificação análoga é aplicada
+às quantidades de focos e zonas. Já os laços que percorrem a grade
+inteira (por exemplo, \texttt{construir\_mapa\_ativacao},
+\texttt{contar\_estados\_finais} e o índice linear usado em
+\texttt{potencial\_ignicao}/\texttt{atualizar\_celula}) foram
+padronizados para \texttt{long long}, com o produto $L\times C$ calculado
+com um cast explícito; isso elimina, para grades maiores que as testadas
+neste relatório, o risco de estouro que já era tratado à parte em
+\texttt{calcular\_checksum}. Todas as alocações têm o retorno conferido.
+
+Logo após \texttt{ler\_entrada} e ainda fora do trecho cronometrado,
+\texttt{precalcular\_pesos} calcula, uma única vez, o peso $P_v$ de cada
+uma das 8 direções de Moore (Seção~\ref{sec:transicoes} adiante) e os
+armazena em \texttt{sim->pesos[8]}. Como $P_v$ depende apenas da direção
+fixa e dos parâmetros de vento e intensidade lidos da entrada --- nunca
+do estado da simulação --- calculá-lo uma vez evita repetir a mesma
+conta para cada vizinho, de cada célula intacta, em cada passo, tanto na
+versão sequencial quanto na paralela.
 
 Na geração da floresta, a semente lida é copiada para uma variável
 local do tipo \texttt{unsigned int}, tipo exigido por \texttt{rand\_r},
@@ -399,12 +417,12 @@ chamam \texttt{potencial\_ignicao}. Todas as leituras são feitas em
 \texttt{proximo\_estado} e \texttt{proximo\_tempo}, o que garante a
 atualização síncrona.
 
-O potencial percorre os deslocamentos $(d_l,d_c)\in\{-1,0,1\}^2$,
-exceto $(0,0)$, e descarta vizinhos fora da grade. Para cada vizinho em
-chamas, a direção até o alvo é $(-d_l,-d_c)$, a partir da qual se obtêm o
-peso básico, o alinhamento $A_v$ e o peso $P_v$ com limite inferior 1.
-O resultado final usa divisão inteira, equivalente ao piso para valores
-não negativos.
+O potencial percorre os 8 deslocamentos fixos de Moore, na mesma ordem
+usada por \texttt{precalcular\_pesos}, e descarta vizinhos fora da
+grade. Para cada vizinho em chamas, o peso $P_v$ já vem pronto de
+\texttt{sim->pesos[k]}, sem recalcular o peso básico nem o alinhamento
+$A_v$ a cada chamada. O resultado final usa divisão inteira, equivalente
+ao piso para valores não negativos.
 
 O pico de ignições é atualizado apenas quando a contagem do passo é
 estritamente maior que o máximo anterior, o que mantém o primeiro passo
@@ -460,22 +478,35 @@ da seguinte forma:
 \begin{lstlisting}
 #pragma omp parallel num_threads(T)
 while (continua):
-    #pragma omp for schedule(static)        // ativar_zonas
     #pragma omp for schedule(guided, 1024) \
             reduction(+:ignicoes) reduction(||:tem_chamas)
+        // ativacao da zona (inlineada) + atualizar_celula
     #pragma omp single                      // estatisticas, troca, parada
 \end{lstlisting}
 
-A ativação das zonas é feita em \texttt{ativar\_zonas} por um
-\texttt{omp for} órfão, isto é, uma diretiva de compartilhamento de
-trabalho fora do escopo léxico da região paralela, que se associa à
-equipe em execução. Cada iteração lê \texttt{ativacao[i]}, que é fixo, e
-escreve apenas em \texttt{estado\_atual[i]}, sem conflito entre
-threads.
+Em uma versão anterior, a ativação das zonas era feita por um
+\texttt{omp for} órfão dedicado (\texttt{ativar\_zonas}), com sua
+própria barreira implícita antes do laço principal. Essa barreira foi
+eliminada: a checagem de ativação (\texttt{if
+(sim->ativacao[idx]==passo \&\& sim->estado\_atual[idx]==1)
+sim->estado\_atual[idx]=4;}) passou a ser inlineada no topo do corpo do
+\texttt{omp for} principal, imediatamente antes da chamada a
+\texttt{atualizar\_celula} para o mesmo \texttt{idx}. Isso é seguro
+porque a ativação só transiciona INTACTA~(1) para CONTENÇÃO~(4) e nunca
+toca em EM~CHAMAS~(2), enquanto \texttt{potencial\_ignicao} só se
+importa se o vizinho está em chamas: uma thread que leia
+\texttt{estado\_atual} de um vizinho antes de ele ser ativado no mesmo
+passo o vê como 1, e depois de ativado o vê como 4, mas nunca como 2 --
+logo o valor de $S_i$ não muda, independentemente de qual das duas
+leituras ocorra. A ordem entre ativação e cálculo de potencial de
+ignição é, portanto, indiferente ao resultado, o que permite eliminar
+uma barreira inteira por passo (de 3 para 2) sem alterar o checksum nem
+a contagem de passos (Seção~\ref{sec:validacao}).
 
 A atualização das células foi reorganizada na função
 \texttt{atualizar\_celula}, que processa uma única posição e não contém
-diretivas OpenMP; o laço que a chama é o que recebe o \texttt{omp for}.
+diretivas OpenMP; o laço que a chama é o que recebe o \texttt{omp for}
+(agora com a ativação inlineada em seu corpo).
 Além do indicador de nova ignição, a função informa se a célula estará
 em chamas no próximo estado. Esses valores são combinados por duas
 reduções: soma para as novas ignições e disjunção lógica para a
@@ -487,12 +518,17 @@ verificação inicial, antes da região paralela; se não houver fogo ou se
 $P=0$, a região nem chega a ser aberta.
 
 Em \texttt{potencial\_ignicao}, os oito deslocamentos de Moore são
-armazenados em vetores constantes, e o laço sobre eles foi reescrito sem
-desvios (\texttt{continue}), para permitir a vetorização com
-\texttt{omp simd reduction(+:S)}. Um vizinho fora da grade tem o índice
-substituído pelo da própria célula, sempre válido, e sua contribuição é
-anulada pelo indicador \texttt{dentro}; o mesmo ocorre com vizinhos que
-não estão em chamas. A soma $S_i$ resultante é a mesma da versão
+armazenados em vetores constantes de escopo de arquivo
+(\texttt{DL}/\texttt{DC}, compartilhados com \texttt{precalcular\_pesos}),
+e o laço sobre eles foi reescrito sem desvios (\texttt{continue}), para
+permitir a vetorização com \texttt{omp simd reduction(+:S)}. Um vizinho
+fora da grade tem o índice substituído pelo da própria célula, sempre
+válido, e sua contribuição é anulada pelo indicador \texttt{dentro}; o
+mesmo ocorre com vizinhos que não estão em chamas. Assim como na versão
+sequencial, o peso $P_v$ de cada direção vem pronto de
+\texttt{sim->pesos[k]}, e não é recalculado a cada vizinho -- aqui esse
+ganho é ainda mais relevante, pois evita repetir a mesma conta escalar
+dentro do laço vetorizado. A soma $S_i$ resultante é a mesma da versão
 sequencial.
 
 \subsection{Compartilhamento e sincronização}
@@ -508,15 +544,15 @@ da simulação são compartilhados, mas nenhuma posição é escrita por mais
 de uma thread no mesmo laço.
 
 A corretude depende das barreiras implícitas ao final de cada construção
-de compartilhamento de trabalho, que reproduzem a ordem da
-Seção~\ref{sec:transicoes}:
+de compartilhamento de trabalho. Após a fusão descrita acima, restam
+apenas duas por passo, e não mais três:
 
 \begin{itemize}
-\item a barreira ao final da ativação garante que todas as contenções do
-passo estejam aplicadas antes que qualquer thread avalie um vizinho;
-\item a barreira ao final da atualização garante que todos os próximos
-estados estejam escritos e que as reduções estejam combinadas antes do
-bloco \texttt{single};
+\item a barreira ao final do \texttt{omp for} principal garante que
+todos os próximos estados estejam escritos e que as reduções estejam
+combinadas antes do bloco \texttt{single} -- a ativação inlineada no
+início do mesmo laço não precisa de barreira própria, pelo argumento de
+correção da Seção anterior;
 \item a barreira ao final do \texttt{single} garante que a troca de
 ponteiros e os novos valores de \texttt{passo} e \texttt{continua} sejam
 vistos por todas as threads antes da próxima iteração do
@@ -540,68 +576,77 @@ resultados não dependem da ordem em que as threads combinam seus valores
 parciais. As saídas são, portanto, as mesmas para qualquer quantidade de
 threads e qualquer política de escalonamento.
 
-\subsection{Escalonamento}
+\subsection{Escalonamento}\label{sec:escalonamento}
 
-Os dois laços paralelos têm perfis de custo distintos e, por isso,
-utilizam políticas diferentes. A ativação das zonas executa trabalho
-praticamente uniforme por iteração: uma comparação e, eventualmente,
-uma escrita. Para ela, usa-se \texttt{schedule(static)}, que atribui a
-cada thread um bloco contíguo e fixo de índices, com sobrecarga mínima
-e boa localidade de memória. A política é declarada explicitamente
-porque, sem a cláusula, o escalonamento adotado depende da
-implementação.
-
-Na atualização das células, o custo por iteração é irregular. Células
-intactas calculam o potencial sobre oito vizinhos, enquanto as demais
-apenas copiam ou decrementam valores. A distribuição desse custo muda ao
-longo da simulação, à medida que a frente de fogo avança e as regiões
-queimadas e contidas crescem. Uma divisão estática em blocos iguais pode
-atribuir a uma thread uma faixa com muito mais células intactas que a
-de outra. Por isso, o laço usa \texttt{schedule(guided, 1024)}: os
-blocos começam grandes e diminuem conforme o trabalho restante,
-equilibrando a carga no final do laço. O tamanho mínimo de 1024
-iterações limita a quantidade de requisições ao escalonador e preserva
-a localidade, evitando a sobrecarga de políticas como
-\texttt{dynamic} com blocos unitários.
+Existe um único laço \texttt{omp for} por
+passo, e ele governa tanto a ativação inlineada quanto a atualização da
+célula; a política de escalonamento escolhida precisa, portanto,
+equilibrar o custo do laço como um todo. Esse custo por iteração é
+irregular: a comparação de ativação é praticamente uniforme, mas
+\texttt{atualizar\_celula} não é -- células intactas calculam o
+potencial sobre oito vizinhos, enquanto as demais apenas copiam ou
+decrementam valores. A distribuição desse custo muda ao longo da
+simulação, à medida que a frente de fogo avança e as regiões queimadas e
+contidas crescem. Uma divisão estática em blocos iguais poderia atribuir
+a uma thread uma faixa com muito mais células intactas que a de outra.
+Por isso, o laço usa \texttt{schedule(guided, 1024)}: os blocos começam
+grandes e diminuem conforme o trabalho restante, equilibrando a carga no
+final do laço. O tamanho mínimo de 1024 iterações limita a quantidade de
+requisições ao escalonador e preserva a localidade, evitando a
+sobrecarga de políticas como \texttt{dynamic} com blocos unitários. A
+política é declarada explicitamente porque, sem a cláusula, o
+escalonamento adotado depende da implementação.
 
 A comparação entre esta política e outras alternativas, exigida pelo
 enunciado, é apresentada na Seção~\ref{sec:resultados}.
 
-\section{Validação da correção}
+\section{Validação da correção}\label{sec:validacao}
 
 
-\begin{table}[htbp]
+\begin{table}[H]
 \centering
-\caption{Validação da versão final (macOS).}
-\begin{tabularx}{\linewidth}{@{}p{2.6cm}p{1.4cm}p{2.2cm}X@{}}
+\caption{Validação da versão final (macOS), após a fusão de barreiras, o
+pré-cálculo dos pesos e a padronização dos índices para \texttt{long long},
+nas três políticas de escalonamento comparadas.}
+\begin{tabularx}{\linewidth}{@{}p{2.6cm}p{1.4cm}p{2.7cm}X@{}}
 \toprule
 \textbf{Caso} & \textbf{Threads} & \textbf{Schedule} & \textbf{Resultado} \\
 \midrule
-Carga pequena & 1--8 & guided(1024) & Checksum e passos idênticos entre \texttt{fire\_seq} e \texttt{fire\_omp} nas 90 execuções (checksum $17073017104646724864$; 80 passos) \\
-Carga média & 1--8 & guided(1024) & Checksum e passos idênticos nas 90 execuções (checksum $17187382406529706254$; 100 passos) \\
-Carga grande & 1--8 & guided(1024) & Checksum e passos idênticos nas 90 execuções (checksum $14825089465781038537$; 100 passos) \\
+Carga pequena & 2, 4, 6, 8 & guided(1024), static, dynamic(1024) & Checksum $17073017104646724864$; 80 passos \\
+Carga média & 2, 4, 6, 8 & guided(1024), static, dynamic(1024) & Checksum $17187382406529706254$; 100 passos \\
+Carga grande & 2, 4, 6, 8 & guided(1024), static, dynamic(1024) & Checksum $14825089465781038537$; 100 passos \\
 \bottomrule
 \end{tabularx}
 \end{table}
 
 Para cada carga, o checksum e a quantidade de passos executados
-coincidiram em todas as 90 execuções (versão sequencial e versão
-OpenMP com $T$ de 2 a 8, dez repetições cada), confirmando que o
-resultado independe da quantidade de threads, conforme exigido pelo
-enunciado. Nas três cargas a simulação consumiu todos os $P$ passos
-configurados, isto é, o incêndio não se extinguiu antes do limite
-definido na Tabela de cargas. As entradas com zero passos, sem focos e
-com zonas de contenção sobrepostas foram contempladas na validação da
-entrada (Seção~\ref{sec:entrada}) e na lógica de \texttt{construir\_mapa\_ativacao},
-mas ainda não possuem uma execução automatizada dedicada nos scripts de
-teste; essa cobertura será complementada nos experimentos do cluster
-Linux.
+coincidiram nas 150 execuções (10 sequenciais e $4\times10$ OpenMP por
+política, nas três políticas de escalonamento, com $T\in\{2,4,6,8\}$),
+confirmando que o resultado independe da quantidade de threads e da
+política de escalonamento, conforme exigido pelo enunciado, e que nenhuma
+das três otimizações desta rodada (fusão de barreiras da
+Seção~\ref{sec:transicoes}, pesos pré-calculados e índices
+\texttt{long long}) alterou o resultado da simulação -- apenas seu
+tempo de execução (Seção~\ref{sec:resultados}). Além dessas 450
+execuções cronometradas, a segurança da fusão de barreiras foi
+verificada manualmente com $T=8$ e $T=16$ (acima do número de núcleos da
+máquina) sobre a carga grande, repetindo a execução cinco vezes em cada
+caso sem nenhuma variação de checksum -- um indício de que a leitura
+sem sincronização de \texttt{estado\_atual} entre a ativação inlineada e
+a avaliação de vizinhos (Seção~\ref{sec:transicoes}) não introduz
+resultados observáveis diferentes, mesmo com mais threads do que
+núcleos de desempenho disponíveis. Nas três cargas a simulação consumiu
+todos os $P$ passos configurados, isto é, o incêndio não se extinguiu
+antes do limite definido na Tabela de cargas. As entradas com zero
+passos, sem focos e com zonas de contenção sobrepostas foram
+contempladas na validação da entrada (Seção~\ref{sec:entrada}) e na
+lógica de \texttt{construir\_mapa\_ativacao}.
 
 
 \section{Ambiente e metodologia experimental}\label{sec:ambiente}
 
 \subsection{Ambiente das duas versões}
-\begin{table}[htbp]
+\begin{table}[H]
 \centering
 \caption{Ambiente experimental --- macOS.}
 \begin{tabularx}{\linewidth}{lX}
@@ -611,10 +656,13 @@ Linux.
 CPU e núcleos & Apple M4 (4 núcleos de desempenho + 6 de eficiência; 10 núcleos no total, sem SMT/hyperthreading) \\
 Memória e sistema & 16\,GiB de RAM; macOS 26.5.2 (build 25F84); arquitetura arm64 (Apple Silicon) \\
 Compilador & Apple clang 17.0.0 (clang-1700.6.4.2), \texttt{target=arm64-apple-darwin25.5.0}, com \texttt{libomp} do Homebrew (\texttt{/opt/homebrew/opt/libomp}) \\
-Compilação sequencial & \texttt{Makefile.macos}, alvo \texttt{fire\_seq}: \texttt{clang -O2 -Wall -Wextra -std=c11 -Xpreprocessor -fopenmp -I<libomp>/include -L<libomp>/lib -lomp fire\_seq.c -o fire\_seq} \\
-Compilação paralela & mesmos parâmetros de compilação, alvo \texttt{fire\_omp} (\texttt{fire\_omp.c}) \\
-Execução OpenMP & \texttt{T} lido do arquivo de entrada e fixado com \texttt{num\_threads(T)} e \texttt{omp\_set\_dynamic(0)}; a política de escalonamento do laço de atualização (\texttt{guided(1024)} nesta rodada) é fixada em tempo de compilação na diretiva \texttt{omp for} \\
-Versão dos fontes & commit \texttt{fe355af} (branch \texttt{main}) \\
+Compilação sequencial & \texttt{Makefile.macos}, alvo \texttt{fire\_seq}: \texttt{clang -O3 -Wall -Wextra -std=c11 -Xpreprocessor -fopenmp -I<libomp>/include -L<libomp>/lib -lomp fire\_seq.c -o fire\_seq} \\
+Compilação paralela & mesmos parâmetros de compilação (inclusive \texttt{-O3}), alvo \texttt{fire\_omp} (\texttt{fire\_omp.c}) -- os dois binários recebem o mesmo nível de otimização, incluindo a vetorização automática (SIMD) que o compilador aplica a ambos \\
+Execução OpenMP & \texttt{T} lido do arquivo de entrada e fixado com \texttt{num\_threads(T)} e \texttt{omp\_set\_dynamic(0)}; a política de escalonamento do laço de atualização é fixada em tempo de compilação na diretiva \texttt{omp for} -- três políticas foram medidas nesta rodada (\texttt{guided(1024)}, \texttt{static} e \texttt{dynamic(1024)}), cada uma recompilando \texttt{fire\_omp} isoladamente; a versão final do código usa \texttt{guided(1024)} \\
+Versão dos fontes & branch \texttt{main}, com a fusão de barreiras, o
+pré-cálculo dos pesos dos vizinhos e a padronização dos índices para
+\texttt{long long} descritos na Seção~\ref{sec:transicoes} e adiante
+(commit a ser registrado após esta rodada de otimizações) \\
 \bottomrule
 \end{tabularx}
 \end{table}
@@ -626,11 +674,10 @@ descrito acima, com o script \texttt{scripts/run\_macos.sh}. Os
 experimentos equivalentes no cluster Linux da disciplina (usando
 \texttt{scripts/run\_linux.sh} e \texttt{Makefile}) ainda serão
 executados; quando disponíveis, serão incorporados a uma versão
-revisada deste relatório, junto com a comparação de uma segunda
-política de escalonamento exigida pelo enunciado.
+revisada deste relatório.
 
 \subsection{Cargas e protocolo de execução}
-\begin{table}[htbp]
+\begin{table}[H]
 \centering
 \caption{Cargas fornecidas. $T$ indica o valor original, que pode variar nos experimentos.}
 \begin{tabular}{lrrrrrr}
@@ -646,15 +693,18 @@ Grande & 2500 & 2500 & 100 & 8 & 10 & 6 \\
 
 Cada configuração foi executada pelo script \texttt{scripts/run\_macos.sh}:
 a versão sequencial é executada uma vez por repetição (sem variar
-threads) e a versão paralela é executada para $T\in\{1,\dots,8\}$, com o
-$4^{\text{o}}$ campo da primeira linha da entrada sobrescrito
-temporariamente a cada valor de $T$ testado; os demais parâmetros da
-Tabela acima são mantidos. Foram realizadas 10 repetições por combinação
-de carga e $T$, totalizando $3\times(10+8\times10)=270$ execuções nesta
-rodada. Nesta versão do relatório, apenas a política
-\texttt{guided(1024)} foi medida no macOS; a comparação com uma segunda
-política de escalonamento, exigida pelo enunciado, será obtida junto com
-os experimentos no cluster Linux.
+threads) e a versão paralela é executada para $T\in\{2,4,6,8\}$ (valores
+padrão do script), com o $4^{\text{o}}$ campo da primeira linha da
+entrada sobrescrito temporariamente a cada valor de $T$ testado; os
+demais parâmetros da Tabela acima são mantidos. Foram realizadas 10
+repetições por combinação de carga e $T$, totalizando
+$3\times(10+4\times10)=150$ execuções por rodada. O script foi executado
+uma vez para cada uma das três políticas de escalonamento comparadas
+(\texttt{guided(1024)}, \texttt{static} e \texttt{dynamic(1024)}),
+recompilando \texttt{fire\_omp} a cada rodada apenas com o argumento de
+\texttt{schedule} trocado na diretiva \texttt{omp for}
+(Seção~\ref{sec:escalonamento}), totalizando $3\times150=450$ execuções
+nesta versão do relatório.
 
 \subsection{Delimitação do trecho cronometrado}
 
@@ -672,149 +722,346 @@ Para a mesma carga, o speedup e a eficiência percentual são definidos por
 S(T)=\frac{t_{\mathrm{seq}}}{t_{\mathrm{omp}}(T)},\qquad
 E(T)=\frac{S(T)}{T}\times100\%.
 \end{equation}
-A referência é o programa sequencial. A versão OpenMP com uma thread é
-uma configuração adicional e não substitui essa referência.
+A referência é o programa sequencial. 
 
 \section{Resultados}\label{sec:resultados}
 
 \subsection{MacOs}
 Os resultados desta seção foram obtidos no ambiente macOS descrito na
-Seção~\ref{sec:ambiente}, com a política \texttt{guided(1024)}. Cada
-valor de $t_{\mathrm{seq}}$ e $t_{\mathrm{omp}}$ é a média aritmética de
-10 repetições; o script de execução também registrou o desvio entre
-repetições (não incluído na tabela), pequeno para as cargas média e
-grande e um pouco maior, em termos relativos, para a carga pequena, cujo
-tempo de execução é da ordem de dezenas de milissegundos. Os
-experimentos no cluster Linux da disciplina, incluindo a comparação com
-uma segunda política de escalonamento, serão incorporados a uma versão
-revisada desta tabela e dos gráficos.
+Seção~\ref{sec:ambiente}, comparando as três políticas de escalonamento
+do laço de atualização discutidas na Seção~\ref{sec:escalonamento}:
+\texttt{guided(1024)} (a escolhida para a versão final de
+\texttt{fire\_omp.c}), \texttt{static} e \texttt{dynamic(1024)}. Cada
+política foi medida em uma rodada independente do script
+\texttt{scripts/run\_macos.sh}, com o mesmo binário recompilado apenas
+trocando o argumento de \texttt{schedule} na diretiva \texttt{omp for};
+$t_{\mathrm{seq}}$ é a média das 30 execuções sequenciais (10 por
+rodada) para aquela carga, e $t_{\mathrm{omp}}$ é a média de 10
+repetições por combinação de política e $T$. Nesta rodada,
+\texttt{fire\_seq} e \texttt{fire\_omp} foram compilados com os mesmos
+parâmetros de otimização (\texttt{-O3} nos dois), de modo que
+$S(T)=t_{\mathrm{seq}}/t_{\mathrm{omp}}(T)$ isola o ganho da
+paralelização entre threads: a vetorização automática (SIMD) que o
+compilador aplica dentro de cada thread já está presente na referência
+sequencial, não apenas na versão OpenMP. A Seção~\ref{sec:simd-ingenuo}
+mostra o que acontece com essas mesmas métricas quando esse cuidado é
+relaxado. 
 
-\begin{table}[htbp]
+\begin{table}[H]
 \centering\small
-\caption{Tempos e métricas de desempenho (macOS, Apple M4, política \texttt{guided(1024)}).}
-\begin{tabular}{llrrrrr}
+\caption{Tempos e métricas de desempenho --- carga pequena (macOS, Apple M4), comparando as três políticas. Ambos os binários compilados com \texttt{-O3}.}
+\begin{tabular}{lrrrrr}
 \toprule
-\textbf{Carga} & \textbf{Schedule} & $T$ & $t_{\mathrm{seq}}$ (s) & $t_{\mathrm{omp}}$ (s) & $S(T)$ & $E(T)$ (\%) \\
+\textbf{Schedule} & $T$ & $t_{\mathrm{seq}}$ (s) & $t_{\mathrm{omp}}$ (s) & $S(T)$ & $E(T)$ (\%) \\
 \midrule
-\textbf{Pequena}  & guided(1024) & 2 & 0.083092 & 0.052361 & 1.59 & 79.35 \\
-                  & guided(1024) & 3 & 0.083092 & 0.035459 & 2.34 & 78.11 \\
-                  & guided(1024) & 4 & 0.083092 & 0.032095 & 2.59 & 64.72 \\
-                  & guided(1024) & 5 & 0.083092 & 0.029900 & 2.78 & 55.58 \\
-                  & guided(1024) & 6 & 0.083092 & 0.028959 & 2.87 & 47.82 \\
-                  & guided(1024) & 7 & 0.083092 & 0.027257 & 3.05 & 43.55 \\
-                  & guided(1024) & 8 & 0.083092 & 0.033282 & 2.50 & 31.21 \\
+dynamic(1024) & 2 & 0.077993 & 0.045236 & 1.72 & 86.21 \\
+              & 4 & 0.077993 & 0.025682 & 3.04 & 75.92 \\
+              & 6 & 0.077993 & 0.023158 & 3.37 & 56.13 \\
+              & 8 & 0.077993 & 0.021404 & 3.64 & 45.55 \\
 \midrule
-\textbf{Média}    & guided(1024) & 2 & 0.942207 & 0.588427 & 1.60 & 80.06 \\
-                  & guided(1024) & 3 & 0.942207 & 0.456809 & 2.06 & 68.75 \\
-                  & guided(1024) & 4 & 0.942207 & 0.376859 & 2.50 & 62.50 \\
-                  & guided(1024) & 5 & 0.942207 & 0.346127 & 2.72 & 54.44 \\
-                  & guided(1024) & 6 & 0.942207 & 0.328233 & 2.87 & 47.84 \\
-                  & guided(1024) & 7 & 0.942207 & 0.300556 & 3.14 & 44.78 \\
-                  & guided(1024) & 8 & 0.942207 & 0.278883 & 3.38 & 42.23 \\
+guided(1024)  & 2 & 0.077993 & 0.047567 & 1.64 & 81.98 \\
+              & 4 & 0.077993 & 0.025740 & 3.03 & 75.75 \\
+              & 6 & 0.077993 & 0.023512 & 3.32 & 55.29 \\
+              & 8 & 0.077993 & 0.022394 & 3.48 & 43.53 \\
 \midrule
-\textbf{Grande}   & guided(1024) & 2 & 3.302497 & 2.267915 & 1.46 & 72.81 \\
-                  & guided(1024) & 3 & 3.302497 & 1.727732 & 1.91 & 63.72 \\
-                  & guided(1024) & 4 & 3.302497 & 1.422973 & 2.32 & 58.02 \\
-                  & guided(1024) & 5 & 3.302497 & 1.341581 & 2.46 & 49.23 \\
-                  & guided(1024) & 6 & 3.302497 & 1.258350 & 2.62 & 43.74 \\
-                  & guided(1024) & 7 & 3.302497 & 1.252327 & 2.64 & 37.67 \\
-                  & guided(1024) & 8 & 3.302497 & 1.181848 & 2.79 & 34.93 \\
+static        & 2 & 0.077993 & 0.046504 & 1.68 & 83.86 \\
+              & 4 & 0.077993 & 0.025160 & 3.10 & 77.50 \\
+              & 6 & 0.077993 & 0.026746 & 2.92 & 48.60 \\
+              & 8 & 0.077993 & 0.022774 & 3.42 & 42.81 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\grafico{figuras/tempos.pdf}{Tempo em função do número de threads. Identificar cargas e schedules.}{fig:tempos}
-\grafico{figuras/speedup.pdf}{Speedup em função do número de threads, com referência ideal $S(T)=T$.}{fig:speedup}
-\grafico{figuras/eficiencia.pdf}{Eficiência percentual em função do número de threads.}{fig:eficiencia}
+\begin{table}[H]
+\centering\small
+\caption{Tempos e métricas de desempenho --- carga média (macOS, Apple M4), comparando as três políticas. Ambos os binários compilados com \texttt{-O3}.}
+\begin{tabular}{lrrrrr}
+\toprule
+\textbf{Schedule} & $T$ & $t_{\mathrm{seq}}$ (s) & $t_{\mathrm{omp}}$ (s) & $S(T)$ & $E(T)$ (\%) \\
+\midrule
+dynamic(1024) & 2 & 0.861671 & 0.517304 & 1.67 & 83.28 \\
+              & 4 & 0.861671 & 0.317482 & 2.71 & 67.85 \\
+              & 6 & 0.861671 & 0.258590 & 3.33 & 55.54 \\
+              & 8 & 0.861671 & 0.216119 & 3.99 & 49.84 \\
+\midrule
+guided(1024)  & 2 & 0.861671 & 0.531620 & 1.62 & 81.04 \\
+              & 4 & 0.861671 & 0.329077 & 2.62 & 65.46 \\
+              & 6 & 0.861671 & 0.272585 & 3.16 & 52.69 \\
+              & 8 & 0.861671 & 0.228740 & 3.77 & 47.09 \\
+\midrule
+static        & 2 & 0.861671 & 0.489486 & 1.76 & 88.02 \\
+              & 4 & 0.861671 & 0.277753 & 3.10 & 77.56 \\
+              & 6 & 0.861671 & 0.276854 & 3.11 & 51.87 \\
+              & 8 & 0.861671 & 0.226592 & 3.80 & 47.53 \\
+\bottomrule
+\end{tabular}
+\end{table}
 
-\section{Análise e discussão}
+\begin{table}[H]
+\centering\small
+\caption{Tempos e métricas de desempenho --- carga grande (macOS, Apple M4), comparando as três políticas. Ambos os binários compilados com \texttt{-O3}.}
+\begin{tabular}{lrrrrr}
+\toprule
+\textbf{Schedule} & $T$ & $t_{\mathrm{seq}}$ (s) & $t_{\mathrm{omp}}$ (s) & $S(T)$ & $E(T)$ (\%) \\
+\midrule
+dynamic(1024) & 2 & 2.994227 & 1.841901 & 1.63 & 81.28 \\
+              & 4 & 2.994227 & 1.181183 & 2.54 & 63.37 \\
+              & 6 & 2.994227 & 0.972402 & 3.08 & 51.32 \\
+              & 8 & 2.994227 & 0.807000 & 3.71 & 46.38 \\
+\midrule
+guided(1024)  & 2 & 2.994227 & 1.893864 & 1.58 & 79.05 \\
+              & 4 & 2.994227 & 1.206397 & 2.48 & 62.05 \\
+              & 6 & 2.994227 & 0.985366 & 3.04 & 50.64 \\
+              & 8 & 2.994227 & 0.801603 & 3.73 & 46.69 \\
+\midrule
+static        & 2 & 2.994227 & 1.731216 & 1.73 & 86.48 \\
+              & 4 & 2.994227 & 1.123987 & 2.66 & 66.60 \\
+              & 6 & 2.994227 & 1.059621 & 2.83 & 47.10 \\
+              & 8 & 2.994227 & 0.887220 & 3.38 & 42.19 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\grafico{figuras/tempos_dynamic-1024-vs-guided-1024-vs-static.pdf}{Tempo em função do número de threads, para as três políticas de escalonamento e as três cargas (cor = carga, traço e marcador = schedule).}{fig:tempos}
+\grafico{figuras/speedup_dynamic-1024-vs-guided-1024-vs-static.pdf}{Speedup em função do número de threads, com referência ideal $S(T)=T$.}{fig:speedup}
+\grafico{figuras/eficiencia_dynamic-1024-vs-guided-1024-vs-static.pdf}{Eficiência percentual em função do número de threads.}{fig:eficiencia}
+
+\subsection{Efeito da vetorização automática (SIMD) na linha de base sequencial}\label{sec:simd-ingenuo}
+
+A compilação com \texttt{-O3} habilita, além de outras otimizações, a
+vetorização automática (SIMD) dos laços de \texttt{fire\_seq.c} e de
+\texttt{fire\_omp.c} -- sem que uma única linha de código precise mudar
+para isso. Isso levanta uma questão metodológica: comparar a versão
+OpenMP contra uma referência sequencial compilada \emph{sem} otimização
+(\texttt{-O0}, "como se não soubéssemos que o processador tem uma
+unidade SIMD") mede uma coisa diferente de compará-la contra uma
+referência igualmente vetorizada. A primeira comparação, aqui chamada de
+\textbf{ingênua}, mistura dois tipos de paralelismo: o paralelismo de
+dados dentro de uma única thread (SIMD, obtido de graça ao trocar
+\texttt{-O0} por \texttt{-O3}) e o paralelismo entre threads via OpenMP,
+que é o que este trabalho de fato estuda. A segunda, chamada de
+\textbf{justa} e usada nas tabelas e nos gráficos da seção anterior,
+isola o segundo ao compilar as duas versões com os mesmos parâmetros de
+otimização.
+
+Para quantificar a diferença, \texttt{fire\_seq} foi recompilado uma vez
+sem nenhuma flag de otimização, gerando uma segunda referência
+sequencial "pura". A Tabela~\ref{tab:simd-isolado} mostra o ganho desse
+único fator -- vetorização automática, sem nenhum paralelismo entre
+threads -- isoladamente.
+
+\begin{table}[H]
+\centering
+\caption{Ganho isolado da vetorização automática (\texttt{-O0}$\to$\texttt{-O3}), com uma única thread em ambos os casos.}
+\label{tab:simd-isolado}
+\begin{tabular}{lrrr}
+\toprule
+\textbf{Carga} & $t_{\mathrm{seq}}$ \texttt{-O0} (s) & $t_{\mathrm{seq}}$ \texttt{-O3} (s) & Razão \\
+\midrule
+Pequena & 0.297597 & 0.077993 & $3.82\times$ \\
+Média   & 3.437358 & 0.861671 & $3.99\times$ \\
+Grande  & 11.986134 & 2.994227 & $4.00\times$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+O resultado é notavelmente consistente entre as três cargas: a
+vetorização automática, sozinha, já produz um ganho de
+$\approx\!4\times$ -- praticamente do mesmo tamanho que o ganho de
+\emph{todo} o paralelismo entre threads medido na Seção anterior em
+$T=8$ ($S_{\text{justo}}(8)$ entre $3.48\times$ e $3.99\times$, Tabelas
+anteriores). Ou seja: se a linha de base sequencial não for vetorizada,
+metade (ou mais) do "speedup" atribuído à versão OpenMP na verdade não
+vem de paralelizar entre threads, e sim de uma otimização de compilador
+que o programa sequencial também poderia ter recebido de graça.
+
+A Tabela~\ref{tab:simd-ingenuo-justo} repete as métricas de
+\texttt{guided(1024)} (a política final) das três cargas, lado a lado
+nas duas comparações -- ambas usam exatamente os mesmos
+$t_{\mathrm{omp}}(T)$ das tabelas da seção anterior, só trocando o
+denominador $t_{\mathrm{seq}}$.
+
+\begin{table}[H]
+\centering\small
+\caption{Comparação ingênua (vs. \texttt{fire\_seq -O0}) e justa (vs. \texttt{fire\_seq -O3}) para \texttt{guided(1024)}.}
+\label{tab:simd-ingenuo-justo}
+\begin{tabular}{lrrrrr}
+\toprule
+\textbf{Carga} & $T$ & $S_{\text{ingênuo}}(T)$ & $E_{\text{ingênuo}}(T)$ (\%) & $S_{\text{justo}}(T)$ & $E_{\text{justo}}(T)$ (\%) \\
+\midrule
+Pequena & 2 & 6.62 & 331.1 & 1.64 & 82.0 \\
+        & 4 & 12.27 & 306.6 & 3.03 & 75.8 \\
+        & 6 & 13.41 & 223.5 & 3.32 & 55.3 \\
+        & 8 & 14.69 & 183.7 & 3.48 & 43.5 \\
+\midrule
+Média   & 2 & 6.70 & 335.2 & 1.62 & 81.0 \\
+        & 4 & 10.69 & 267.2 & 2.62 & 65.5 \\
+        & 6 & 13.18 & 219.6 & 3.16 & 52.7 \\
+        & 8 & 15.65 & 195.6 & 3.77 & 47.1 \\
+\midrule
+Grande  & 2 & 6.61 & 330.3 & 1.58 & 79.0 \\
+        & 4 & 10.20 & 255.1 & 2.48 & 62.0 \\
+        & 6 & 12.36 & 206.0 & 3.04 & 50.6 \\
+        & 8 & 14.89 & 186.1 & 3.73 & 46.7 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\grafico{figuras/tempos_dynamic-1024-vs-guided-1024-vs-static-noo3.pdf}{Tempo em função do número de threads (comparação ingênua: \texttt{fire\_omp -O3} contra \texttt{fire\_seq} sem otimização).}{fig:tempos-noo3}
+\grafico{figuras/speedup_dynamic-1024-vs-guided-1024-vs-static-noo3.pdf}{Speedup ingênuo em função do número de threads -- note a escala do eixo $Y$, bem acima da referência ideal $S(T)=T$.}{fig:speedup-noo3}
+\grafico{figuras/eficiencia_dynamic-1024-vs-guided-1024-vs-static-noo3.pdf}{Eficiência ingênua em função do número de threads -- valores acima de 100\% indicam que o "speedup" medido não é apenas paralelismo entre threads.}{fig:eficiencia-noo3}
+
+A diferença é grande o bastante para mudar a leitura qualitativa dos
+resultados. Na comparação ingênua, $E_{\text{ingênuo}}(2)$ já passa de
+$330\%$ nas três cargas. Esse "excesso" de eficiência é inteiramente explicado pela
+Tabela~\ref{tab:simd-isolado}: dividir $E_{\text{ingênuo}}(T)$ pela razão
+$\approx\!4\times$ da vetorização isolada recupera, com boa aproximação,
+$E_{\text{justo}}(T)$ (por exemplo, na carga média, $335{,}2\%/3{,}99
+\approx 84\%$, próximo dos $81{,}0\%$ medidos diretamente -- a pequena
+diferença vem do próprio ruído de medição entre rodadas independentes).
+Isso confirma que os dois fatores são aproximadamente independentes e
+multiplicativos: speedup total $\approx$ speedup SIMD (por thread)
+$\times$ speedup de paralelismo (entre threads).
+
+Por esse motivo, a comparação \textbf{justa} (Tabelas da
+Seção~\ref{sec:resultados} e Tabela~\ref{tab:simd-ingenuo-justo}, colunas
+$S_{\text{justo}}/E_{\text{justo}}$) é a usada como referência principal
+deste relatório e nas Seções~\ref{sec:resultados} e seguintes: é ela que
+isola a pergunta que o enunciado pede para responder, o quanto a
+\emph{paralelização entre threads} melhora o desempenho. 
+
+Vale lembrar que a utilização de \texttt{-O3} também pode ser lida como uma paralelização implícita, mas entre dados (SIMD) e não entre threads.
+Por utilizarmos explicitamente a diretiva \texttt{omp simd} em trechos vetorizáveis do código, achamos interessante trazer a comparação entre um código sequencial compilado sem a flag de otimização e o código paralelo compilado com a flag de otimização, 
+para mostrar a capacidade de melhora de desempenho que a vetorização automática do compilador traz, mesmo sem a utilização de threads.
 
 \textbf{Todas as observações abaixo se referem exclusivamente ao
-ambiente macOS} descrito na Seção~\ref{sec:ambiente} e à política
-\texttt{guided(1024)}; conclusões sobre outros escalonamentos e sobre o
+ambiente macOS} descrito na Seção~\ref{sec:ambiente}; conclusões sobre o
 comportamento no cluster Linux ficam para a versão revisada deste
 relatório.
 
+\textbf{Efeito da fusão de barreiras e do pré-cálculo dos pesos.} Uma
+rodada anterior deste relatório, no mesmo ambiente e com o mesmo script,
+media a versão com \texttt{ativar\_zonas} ainda separada (3 barreiras por
+passo), os pesos $P_v$ recalculados a cada vizinho e apenas a política
+\texttt{guided(1024)}. Comparando os mesmos pontos $(carga,T)$ dessa
+política entre as duas rodadas, o ganho aparece em todas as combinações
+medidas: na carga grande, $S(8)$ sobe de $2.79$ para $3.73$ ($E(8)$ de
+$34.93\%$ para $46.69\%$); na carga média, de $S(8)=3.38$ para $3.77$
+($E(8)$ de $42.23\%$ para $47.09\%$); na carga pequena, de $S(4)=2.59$
+para $3.03$. O ganho relativo tende a crescer com $T$, como seria de se
+esperar de uma otimização que remove um custo fixo por passo (uma
+barreira inteira): esse custo pesa proporcionalmente mais quanto mais
+threads precisam ser sincronizadas a cada passo.
+
 \textbf{Ganho de threads limitado pelo número de núcleos de desempenho.}
 O Apple M4 utilizado possui apenas 4 núcleos de desempenho e 6 de
-eficiência, sem SMT. Para as três cargas, o speedup cresce de forma
-quase linear até $T=3$--$4$ (por exemplo, $S(4)=2.50$ na carga média) e
-passa a crescer bem mais devagar a partir daí: entre $T=4$ e $T=8$ a
-carga média ganha apenas $0.88$ de speedup adicional, contra $1.66$
-entre $T=1$ e $T=4$. Esse comportamento é compatível com threads
-adicionais sendo atendidas por núcleos de eficiência, mais lentos que os
-de desempenho, e explica por que $E(T)$ cai de forma monótona em todas
-as cargas: de $83$--$84\%$ em $T=1$ para $31$--$43\%$ em $T=8$.
+eficiência, sem SMT. Para as três cargas e as três políticas, $E(T)$ cai
+de forma monótona à medida que $T$ cresce, de $79$--$88\%$ em $T=2$ para
+$42$--$50\%$ em $T=8$. O speedup continua crescendo em todo o intervalo
+medido para quase todas as combinações, mas a taxas decrescentes: na
+carga média com \texttt{guided(1024)}, por exemplo, $S(T)$ sobe de
+$1.62$ em $T=2$ para $3.77$ em $T=8$ -- um fator de $2.33$ ao
+quadruplicar o número de threads, bem abaixo do fator $4$ que um ganho
+ideal teria. Esse achatamento é compatível com threads acima de 4 sendo
+atendidas, ao menos em parte, por núcleos de eficiência mais lentos que
+os de desempenho, e se repete nas três políticas de escalonamento
+testadas.
 
-\textbf{A carga grande escala pior do que a carga média.} Em $T=8$, a
-carga média atinge $S(8)=3.38$ e $E(8)=42.23\%$, enquanto a carga grande
-atinge apenas $S(8)=2.79$ e $E(8)=34.93\%$, apesar de ter mais trabalho
-por passo ($2500\times2500$ contra $1200\times1500$ células). Esse
-resultado é o oposto do que a lei de Amdahl prevista isoladamente
-sugeriria (cargas maiores tendem a diluir melhor a fração serial fixa
-por passo). Uma explicação provável é a pressão sobre a hierarquia de
-memória: a grade da carga grande ($\approx 6{,}25$ milhões de células,
-com sete vetores de tamanho $LC$) não cabe nos caches compartilhados
-pelos núcleos de desempenho, de modo que, ao aumentar o número de
-threads ativas, a carga passa a ser limitada pela largura de banda de
-memória, e não apenas pelo paralelismo de cálculo. Essa hipótese deve
-ser reexaminada no cluster Linux, cuja hierarquia de cache e memória é
-distinta.
+\textbf{\texttt{static} é consistentemente a pior política em $T$ alto;
+a diferença entre \texttt{guided(1024)} e \texttt{dynamic(1024)} não é
+robusta entre rodadas.} Em $T=6$ e $T=8$, \texttt{static} perde
+eficiência de forma acentuada nas três cargas ($42$--$49\%$ em $T=8$,
+contra $43$--$50\%$ de \texttt{guided(1024)}/\texttt{dynamic(1024)} no
+mesmo ponto), repetindo o padrão já visto na rodada anterior (com os
+flags de compilação ainda inconsistentes) e confirmando a hipótese da
+Seção~\ref{sec:escalonamento}: com poucas threads, os blocos contíguos e
+fixos de \texttt{static} ainda cobrem uma mistura razoável de células
+intactas e não intactas, mas conforme $T$ cresce, os blocos ficam
+menores e mais sensíveis a onde a frente de fogo está concentrada
+naquele passo, e o desbalanceamento resultante deixa de ser compensado
+pelo overhead (que \texttt{static} praticamente não tem). Esse resultado
+é robusto: reproduziu-se em duas rodadas independentes. Já a diferença
+entre \texttt{guided(1024)} e \texttt{dynamic(1024)} \emph{não} se
+reproduziu: nesta rodada, \texttt{dynamic(1024)} fica à frente de
+\texttt{guided(1024)} em praticamente todos os pontos medidos (por
+exemplo, $S(8)=3.99$ contra $3.77$ na carga média, e $S(8)=3.64$ contra
+$3.48$ na pequena), com exceção de um empate técnico na carga grande em
+$T=8$ ($S(8)=3.73$ de \texttt{guided(1024)} contra $3.71$ de
+\texttt{dynamic(1024)}, diferença de $0.02$) -- o oposto do que uma
+rodada anterior deste relatório havia registrado, na qual
+\texttt{guided(1024)} vencia com folga nas cargas média e grande em
+$T=8$. Como a diferença entre as duas políticas fica quase sempre abaixo
+de $10\%$, parte dessa inversão provavelmente vem do ruído de medição
+entre sessões independentes (variação térmica, outros processos em
+segundo plano), não de uma vantagem estrutural de uma política sobre a
+outra. \texttt{guided(1024)} foi mantida como a política final do código
+por nunca perder feio para \texttt{dynamic(1024)} (a maior desvantagem
+observada é de $\approx\!7\%$ em $S(T)$) e por nunca perder para
+\texttt{static}; mas uma conclusão mais forte entre
+\texttt{guided(1024)} e \texttt{dynamic(1024)} exigiria mais rodadas
+completas do que as disponíveis nesta versão do relatório --
+idealmente em outro ambiente, como o cluster Linux.
 
-\textbf{Queda de speedup na carga pequena em $T=8$.} A carga pequena tem
-o pior comportamento relativo em threads altas: o speedup sobe até
-$S(7)=3.05$ e cai para $S(8)=2.50$, o único caso, entre as três cargas,
-em que aumentar $T$ piora o tempo de execução. Como o trecho
-cronometrado da carga pequena dura poucas dezenas de milissegundos e
-tem apenas $200\,000$ células distribuídas por passo, o custo fixo de
-cada barreira implícita e de cada região de trabalho compartilhado
-(Seção~\ref{sec:transicoes}) passa a ser proporcionalmente maior à
-medida que $T$ cresce e que a fatia de trabalho por thread diminui;
-com 8 threads, cada uma recebe em média $25\,000$ células por passo,
-valor próximo do tamanho mínimo de bloco do \texttt{guided(1024)}, o
-que reduz a eficácia do balanceamento de carga e evidencia o custo de
-sincronização por passo. Esse efeito é uma evidência de que, para
-cargas pequenas, threads demais podem ser contraproducentes com essa
-política de escalonamento --- um ponto a ser confrontado com a segunda
-política de escalonamento ainda pendente.
 
 \textbf{Consistência dos resultados.} Como reportado na
-Seção~\ref{sec:resultados} anterior (validação), o checksum e a
-quantidade de passos executados foram idênticos entre \texttt{fire\_seq}
-e \texttt{fire\_omp} para todo $T$ de 1 a 8, nas três cargas, confirmando
-que a paralelização não altera o resultado da simulação --- apenas o seu
-tempo de execução, exatamente como esperado da modelagem com atualização
-síncrona e reduções (Seção~\ref{sec:transicoes}).
+Seção~\ref{sec:validacao}, o checksum e a quantidade de passos
+executados foram idênticos entre \texttt{fire\_seq} e \texttt{fire\_omp}
+para $T\in\{2,4,6,8\}$, nas três cargas e nas três políticas de
+escalonamento, confirmando que nem a paralelização, nem a escolha de
+schedule, nem as otimizações desta rodada (fusão de barreiras, pesos
+pré-calculados, índices \texttt{long long}) alteram o resultado da
+simulação --- apenas o seu tempo de execução, exatamente como esperado
+da modelagem com atualização síncrona e reduções
+(Seção~\ref{sec:transicoes}).
 
 \section{Conclusão}
 
 As implementações sequencial e paralela atendem aos requisitos do
 enunciado: mesma saída determinística para uma dada entrada,
-independentemente da quantidade de threads, com a versão paralela
-construída sobre uma região \texttt{parallel} persistente, \texttt{omp
-for} com \texttt{default(none)}, reduções para os contadores e SIMD no
-cálculo do potencial de ignição. No ambiente macOS avaliado (Apple M4,
-10 núcleos, política \texttt{guided(1024)}), a versão OpenMP produziu
-speedups entre $2.50\times$ e $3.38\times$ em relação à versão
-sequencial, com eficiência decrescente à medida que a quantidade de
-threads ultrapassa o número de núcleos de desempenho da máquina. A carga
-grande escalou pior do que a média, indicando possível limitação de
-banda de memória, e a carga pequena chegou a piorar ao usar 8 threads,
-evidenciando que o custo de sincronização por passo pode superar o
-ganho de paralelismo quando a carga de trabalho é pequena.
+independentemente da quantidade de threads e da política de
+escalonamento, com a versão paralela construída sobre uma região
+\texttt{parallel} persistente, um único \texttt{omp for} por passo (após
+a fusão da ativação de zonas com a atualização de células) com
+\texttt{default(none)}, reduções para os contadores e SIMD no cálculo do
+potencial de ignição, cujos pesos por direção são pré-calculados uma
+única vez fora do trecho cronometrado. No ambiente macOS avaliado (Apple
+M4, 10 núcleos), três políticas de escalonamento foram medidas para o
+laço de atualização -- \texttt{guided(1024)}, \texttt{static} e
+\texttt{dynamic(1024)} --, satisfazendo a comparação de pelo menos duas
+políticas exigida pelo enunciado, com \texttt{fire\_seq} e
+\texttt{fire\_omp} compilados com os mesmos parâmetros de otimização
+(\texttt{-O3}) para que o speedup medido isole o ganho de
+paralelização entre threads (Seção~\ref{sec:simd-ingenuo}).
+\texttt{static} foi consistentemente a pior política a partir de
+$T=6$ em duas rodadas de medição independentes, enquanto
+\texttt{guided(1024)} e \texttt{dynamic(1024)} sustentaram melhor o
+speedup em $T$ alto; a vantagem entre essas duas últimas não se mostrou
+robusta entre rodadas, então \texttt{guided(1024)}
+foi mantida como política final. Com \texttt{guided(1024)}, a
+versão OpenMP produziu speedups entre $1.58\times$ e $3.77\times$ em
+relação à versão sequencial igualmente otimizada (para
+$T\in\{2,4,6,8\}$), com eficiência decrescente à medida que a
+quantidade de threads ultrapassa o número de núcleos de desempenho da
+máquina (de $79$--$88\%$ em $T=2$ para $42$--$50\%$ em $T=8$, todas as
+políticas). A diferença entre a carga grande e a média, que já vinha
+diminuindo ao longo das otimizações deste trabalho, ficou dentro do
+ruído de medição especificamente para \texttt{guided(1024)}
+($S(8)=3.73$ contra $3.77$), embora ainda mensurável sob
+\texttt{dynamic(1024)} e \texttt{static}.
 
-Esses resultados são específicos do ambiente macOS descrito na
-Seção~\ref{sec:ambiente} e de uma única política de escalonamento. Os
-próximos passos deste trabalho são: (i) executar o mesmo protocolo
-experimental no cluster Linux da disciplina, com \texttt{scripts/run\_linux.sh}
-e o \texttt{Makefile} padrão; (ii) medir pelo menos uma segunda política
-de escalonamento (por exemplo, \texttt{static} ou \texttt{dynamic}) para
-o laço de atualização, conforme exigido pelo enunciado; e (iii)
-completar a validação de correção com os casos de zero passos/sem focos
-e de zonas de contenção sobrepostas. Espera-se que o cluster Linux, com
-mais núcleos e uma hierarquia de memória diferente da do M4, permita
-avaliar se a queda de eficiência observada aqui é uma limitação da
-arquitetura específica ou do algoritmo de paralelização em si.
+Um achado deste trabalho, tratado em detalhe na
+Seção~\ref{sec:simd-ingenuo}, é de natureza metodológica: comparar a
+versão OpenMP (compilada com \texttt{-O3}) contra uma referência
+sequencial sem otimização produz speedups "ingênuos" de até
+$15.9\times$ e eficiências de até $348\%$ -- números sem sentido físico
+para paralelismo entre threads, que se explicam quase inteiramente pelo
+ganho de $\approx\!4\times$ que a vetorização automática (SIMD) do
+compilador já dá, sozinha, a um programa de uma única thread. Manter os
+mesmos parâmetros de otimização nas duas versões, como feito nesta
+rodada, é o que permite atribuir o speedup medido especificamente à
+paralelização entre threads, e não a uma mistura de dois fenômenos
+distintos.
+
 
 
 \begin{thebibliography}{9}

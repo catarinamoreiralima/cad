@@ -3,11 +3,12 @@
 
 Le um ou mais CSVs de resultados/ (colunas: carga,versao,schedule,threads,
 repeticao,tempo_s,passos,checksum), calcula as metricas definidas no
-relatorio (S(T) = t_seq / t_omp(T), E(T) = S(T)/T * 100%) e produz:
+relatorio (S(T) = t_seq / t_omp(T), E(T) = S(T)/T * 100%) e produz, com o(s)
+schedule(s) OpenMP presentes nos dados no nome do arquivo:
 
-    relatorio/figuras/tempos.pdf
-    relatorio/figuras/speedup.pdf
-    relatorio/figuras/eficiencia.pdf
+    relatorio/figuras/tempos_<schedule>.pdf
+    relatorio/figuras/speedup_<schedule>.pdf
+    relatorio/figuras/eficiencia_<schedule>.pdf
 
 e um resumo tabular em resultados/resumo.csv, pronto para preencher a
 tabela "Tempos e metricas de desempenho" do relatorio.
@@ -42,6 +43,7 @@ CHROME = {
 }
 CATEGORICAL = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948"]
 LINESTYLES = ["-", "--", "-.", ":"]
+MARKERS = ["o", "s", "^", "D", "v", "P"]
 
 CARGA_ORDEM = ["pequena", "media", "grande"]
 
@@ -152,16 +154,41 @@ def linestyle_por_schedule(schedules: list[str]) -> dict[str, str]:
     return mapa
 
 
+def marker_por_schedule(schedules: list[str]) -> dict[str, str]:
+    """Marcador distinto por schedule, na mesma ordem estavel de
+    linestyle_por_schedule, para diferenciar as series tambem por forma
+    (nao so por cor/traco) quando ha mais de um schedule no mesmo grafico."""
+    mapa = {}
+    outros = [s for s in schedules if s != "-"]
+    for i, s in enumerate(sorted(set(outros))):
+        mapa[s] = MARKERS[i % len(MARKERS)]
+    mapa["-"] = "x"
+    return mapa
+
+
 def ordem_serie(item) -> tuple:
     (carga, schedule), _pontos = item
     idx = CARGA_ORDEM.index(carga) if carga in CARGA_ORDEM else 99
     return (idx, carga, schedule)
 
 
-def plot_tempos(seq_base, serie, outdir: Path) -> None:
+def schedule_slug(serie: dict) -> str:
+    """Sufixo de nome de arquivo com o(s) schedule(s) OpenMP presentes nos
+    dados (ex.: "_guided-1024"), na mesma grafia usada nos CSVs de
+    resultados/. Varios schedules distintos no mesmo grafico viram um unico
+    sufixo com "-vs-" entre eles; sem schedule omp (so "-" de seq), fica vazio.
+    """
+    schedules = sorted({s for (_c, s) in serie.keys() if s != "-"})
+    if not schedules:
+        return ""
+    return "_" + "-vs-".join(s.replace(":", "-") for s in schedules)
+
+
+def plot_tempos(seq_base, serie, outdir: Path, slug: str) -> None:
     fig, ax = plt.subplots(figsize=(7, 4.5), dpi=150)
     schedules = [s for (_c, s) in serie.keys()]
     ls_map = linestyle_por_schedule(schedules)
+    mk_map = marker_por_schedule(schedules)
 
     todos_threads = sorted({t for pontos in serie.values() for (t, *_r) in pontos})
     max_t = max(todos_threads) if todos_threads else 8
@@ -176,7 +203,8 @@ def plot_tempos(seq_base, serie, outdir: Path) -> None:
         xs = [p[0] for p in pontos]
         ys = [p[1] for p in pontos]
         rotulo_sched = f" ({schedule})" if schedule != "-" else ""
-        ax.plot(xs, ys, color=cor, linestyle=ls_map[schedule], linewidth=2, marker="o", markersize=6,
+        ax.plot(xs, ys, color=cor, linestyle=ls_map[schedule], linewidth=2,
+                marker=mk_map[schedule], markersize=6,
                 label=f"{carga_label(carga)} - OpenMP{rotulo_sched}")
 
     ax.set_xlabel("Threads (T)")
@@ -186,14 +214,15 @@ def plot_tempos(seq_base, serie, outdir: Path) -> None:
     estilizar_eixo(ax)
     ax.legend(frameon=False, fontsize=8, loc="best")
     fig.tight_layout()
-    fig.savefig(outdir / "tempos.pdf", facecolor=fig.get_facecolor())
+    fig.savefig(outdir / f"tempos{slug}.pdf", facecolor=fig.get_facecolor())
     plt.close(fig)
 
 
-def plot_speedup(serie, outdir: Path) -> None:
+def plot_speedup(serie, outdir: Path, slug: str) -> None:
     fig, ax = plt.subplots(figsize=(7, 4.5), dpi=150)
     schedules = [s for (_c, s) in serie.keys()]
     ls_map = linestyle_por_schedule(schedules)
+    mk_map = marker_por_schedule(schedules)
 
     todos_threads = sorted({t for pontos in serie.values() for (t, *_r) in pontos})
     max_t = max(todos_threads) if todos_threads else 8
@@ -206,7 +235,8 @@ def plot_speedup(serie, outdir: Path) -> None:
         xs = [p[0] for p in pontos]
         ys = [p[2] for p in pontos]
         rotulo_sched = f" ({schedule})" if schedule != "-" else ""
-        ax.plot(xs, ys, color=cor, linestyle=ls_map[schedule], linewidth=2, marker="o", markersize=6,
+        ax.plot(xs, ys, color=cor, linestyle=ls_map[schedule], linewidth=2,
+                marker=mk_map[schedule], markersize=6,
                 label=f"{carga_label(carga)}{rotulo_sched}")
 
     ax.set_xlabel("Threads (T)")
@@ -216,14 +246,15 @@ def plot_speedup(serie, outdir: Path) -> None:
     estilizar_eixo(ax)
     ax.legend(frameon=False, fontsize=8, loc="best")
     fig.tight_layout()
-    fig.savefig(outdir / "speedup.pdf", facecolor=fig.get_facecolor())
+    fig.savefig(outdir / f"speedup{slug}.pdf", facecolor=fig.get_facecolor())
     plt.close(fig)
 
 
-def plot_eficiencia(serie, outdir: Path) -> None:
+def plot_eficiencia(serie, outdir: Path, slug: str) -> None:
     fig, ax = plt.subplots(figsize=(7, 4.5), dpi=150)
     schedules = [s for (_c, s) in serie.keys()]
     ls_map = linestyle_por_schedule(schedules)
+    mk_map = marker_por_schedule(schedules)
 
     todos_threads = sorted({t for pontos in serie.values() for (t, *_r) in pontos})
 
@@ -234,7 +265,8 @@ def plot_eficiencia(serie, outdir: Path) -> None:
         xs = [p[0] for p in pontos]
         ys = [p[3] for p in pontos]
         rotulo_sched = f" ({schedule})" if schedule != "-" else ""
-        ax.plot(xs, ys, color=cor, linestyle=ls_map[schedule], linewidth=2, marker="o", markersize=6,
+        ax.plot(xs, ys, color=cor, linestyle=ls_map[schedule], linewidth=2,
+                marker=mk_map[schedule], markersize=6,
                 label=f"{carga_label(carga)}{rotulo_sched}")
 
     ax.set_xlabel("Threads (T)")
@@ -244,7 +276,7 @@ def plot_eficiencia(serie, outdir: Path) -> None:
     estilizar_eixo(ax)
     ax.legend(frameon=False, fontsize=8, loc="best")
     fig.tight_layout()
-    fig.savefig(outdir / "eficiencia.pdf", facecolor=fig.get_facecolor())
+    fig.savefig(outdir / f"eficiencia{slug}.pdf", facecolor=fig.get_facecolor())
     plt.close(fig)
 
 
@@ -270,12 +302,13 @@ def main() -> None:
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
 
-    plot_tempos(seq_base, serie, outdir)
-    plot_speedup(serie, outdir)
-    plot_eficiencia(serie, outdir)
+    slug = schedule_slug(serie)
+    plot_tempos(seq_base, serie, outdir, slug)
+    plot_speedup(serie, outdir, slug)
+    plot_eficiencia(serie, outdir, slug)
     escrever_resumo(Path(args.resumo), seq_base, serie)
 
-    print(f"Graficos escritos em {outdir}/tempos.pdf, {outdir}/speedup.pdf, {outdir}/eficiencia.pdf")
+    print(f"Graficos escritos em {outdir}/tempos{slug}.pdf, {outdir}/speedup{slug}.pdf, {outdir}/eficiencia{slug}.pdf")
 
 
 if __name__ == "__main__":
