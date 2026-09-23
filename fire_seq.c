@@ -1,6 +1,34 @@
+#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 199506L
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
+#include <limits.h>
 #include <omp.h> // usado apenas para medir tempo com omp_get_wtime() (secao 12 do enunciado)
+
+// rand_r e' POSIX e nao existe no MinGW/Windows. Esta versao de compatibilidade
+// reproduz o algoritmo do rand_r da glibc, mantendo a mesma floresta e checksum
+// nas duas plataformas. Em sistemas POSIX, usa-se a funcao nativa.
+static int fire_rand_r(unsigned int *seed) {
+#ifdef _WIN32
+    unsigned int next = *seed;
+    unsigned int resultado;
+
+    next = next * 1103515245U + 12345U;
+    resultado = (next / 65536U) % 2048U;
+    next = next * 1103515245U + 12345U;
+    resultado = (resultado << 10) ^ ((next / 65536U) % 1024U);
+    next = next * 1103515245U + 12345U;
+    resultado = (resultado << 10) ^ ((next / 65536U) % 1024U);
+
+    *seed = next;
+    return (int)resultado;
+#else
+    return rand_r(seed);
+#endif
+}
 
 // Representa um foco inicial de incendio (celula que comeca em chamas).
 typedef struct {
@@ -60,6 +88,14 @@ void ler_entrada(const char *arquivo_entrada, Simulacao *sim) {
         exit(EXIT_FAILURE);
     }
 
+    // Todos os indices da simulacao sao int. Rejeitar uma matriz cujo numero
+    // de celulas nao cabe nesse tipo evita overflow em L*C e nos indices.
+    long long total_celulas = (long long)sim->L * (long long)sim->C;
+    if (total_celulas > INT_MAX || (size_t)total_celulas > SIZE_MAX / sizeof(int)) {
+        fprintf(stderr, "Erro: Dimensoes da matriz excedem o limite suportado.\n");
+        exit(EXIT_FAILURE);
+    }
+
     // 2a linha: configuracao do vento (secao 4.2)
     if (fscanf(arquivo, "%d %d %d",
                &sim->vento_linha,
@@ -93,8 +129,20 @@ void ler_entrada(const char *arquivo_entrada, Simulacao *sim) {
         exit(EXIT_FAILURE);
     }
 
-    sim->focos = (Foco *)malloc(sim->F * sizeof(Foco));
-    sim->zonas = (ZonaContencao *)malloc(sim->Z * sizeof(ZonaContencao));
+    if ((size_t)sim->F > SIZE_MAX / sizeof(Foco) ||
+        (size_t)sim->Z > SIZE_MAX / sizeof(ZonaContencao)) {
+        fprintf(stderr, "Erro: Quantidade de focos ou zonas excede o limite suportado.\n");
+        exit(EXIT_FAILURE);
+    }
+
+    sim->focos = malloc((size_t)sim->F * sizeof(*sim->focos));
+    sim->zonas = malloc((size_t)sim->Z * sizeof(*sim->zonas));
+    if ((sim->F > 0 && sim->focos == NULL) || (sim->Z > 0 && sim->zonas == NULL)) {
+        fprintf(stderr, "Erro: Falha na alocacao de focos ou zonas.\n");
+        free(sim->focos);
+        free(sim->zonas);
+        exit(EXIT_FAILURE);
+    }
 
     // proximas F linhas: focos iniciais de incendio
     for (int i = 0; i < sim->F; i++) {
@@ -165,15 +213,15 @@ void ler_entrada(const char *arquivo_entrada, Simulacao *sim) {
 // Aloca todos os vetores de tamanho L*C usados pela simulacao.
 // Nao entra no trecho cronometrado (secao 12).
 void alocar_estruturas(Simulacao *sim) {
-    int n = sim->L * sim->C;
+    size_t n = (size_t)sim->L * (size_t)sim->C;
 
-    sim->cobertura = (int *)malloc(n * sizeof(int));
-    sim->umidade = (int *)malloc(n * sizeof(int));
-    sim->estado_atual = (int *)malloc(n * sizeof(int));
-    sim->proximo_estado = (int *)malloc(n * sizeof(int));
-    sim->tempo_atual = (int *)malloc(n * sizeof(int));
-    sim->proximo_tempo = (int *)malloc(n * sizeof(int));
-    sim->ativacao = (int *)malloc(n * sizeof(int));
+    sim->cobertura = malloc(n * sizeof(*sim->cobertura));
+    sim->umidade = malloc(n * sizeof(*sim->umidade));
+    sim->estado_atual = malloc(n * sizeof(*sim->estado_atual));
+    sim->proximo_estado = malloc(n * sizeof(*sim->proximo_estado));
+    sim->tempo_atual = malloc(n * sizeof(*sim->tempo_atual));
+    sim->proximo_tempo = malloc(n * sizeof(*sim->proximo_tempo));
+    sim->ativacao = malloc(n * sizeof(*sim->ativacao));
 
     if (sim->cobertura == NULL || sim->umidade == NULL ||
         sim->estado_atual == NULL || sim->proximo_estado == NULL ||
@@ -189,26 +237,30 @@ void alocar_estruturas(Simulacao *sim) {
 // sequencia de rand_r, pois o resultado precisa ser deterministico e
 // identico entre as versoes sequencial e paralela.
 void gerar_floresta(Simulacao *sim) {
+    // rand_r exige unsigned int*. Usar uma variavel do tipo correto evita a
+    // violacao de aliasing causada por converter int* para unsigned int*.
+    unsigned int seed = (unsigned int)sim->seed;
+
     for (int linha = 0; linha < sim->L; linha++) {
         for (int coluna = 0; coluna < sim->C; coluna++) {
             int idx = linha * sim->C + coluna;
 
-            // cast necessario: rand_r espera unsigned int*, seed e' declarado como int
             // cobertura: 0-9 agua, 10-19 solo exposto, 20-54 rasteira, 55-99 floresta (Quadro 6.2.1)
-            int valor = rand_r((unsigned int *)&sim->seed) % 100;
+            int valor = fire_rand_r(&seed) % 100;
             if (valor < 10) sim->cobertura[idx] = 0;
             else if (valor < 20) sim->cobertura[idx] = 1;
             else if (valor < 55) sim->cobertura[idx] = 2;
             else sim->cobertura[idx] = 3;
 
             // umidade gerada logo em seguida, ainda na mesma celula (ordem exigida pelo enunciado)
-            sim->umidade[idx] = rand_r((unsigned int *)&sim->seed) % 101;
+            sim->umidade[idx] = fire_rand_r(&seed) % 101;
 
             // agua/solo exposto = nao combustivel (0); rasteira/floresta comecam intactas (1)
             sim->estado_atual[idx] = (sim->cobertura[idx] <= 1) ? 0 : 1;
             sim->tempo_atual[idx] = 0;
         }
     }
+
 }
 
 // Aplica os focos iniciais de incendio (secao 6.5): marca as celulas como

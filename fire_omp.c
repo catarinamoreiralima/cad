@@ -1,6 +1,34 @@
+#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 199506L
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
+#include <limits.h>
 #include <omp.h>
+
+// rand_r e' POSIX e nao existe no MinGW/Windows. Esta versao de compatibilidade
+// reproduz o algoritmo do rand_r da glibc, mantendo a mesma floresta e checksum
+// nas duas plataformas. Em sistemas POSIX, usa-se a funcao nativa.
+static int fire_rand_r(unsigned int *seed) {
+#ifdef _WIN32
+    unsigned int next = *seed;
+    unsigned int resultado;
+
+    next = next * 1103515245U + 12345U;
+    resultado = (next / 65536U) % 2048U;
+    next = next * 1103515245U + 12345U;
+    resultado = (resultado << 10) ^ ((next / 65536U) % 1024U);
+    next = next * 1103515245U + 12345U;
+    resultado = (resultado << 10) ^ ((next / 65536U) % 1024U);
+
+    *seed = next;
+    return (int)resultado;
+#else
+    return rand_r(seed);
+#endif
+}
 
 // Representa um foco inicial de incendio (celula que comeca em chamas).
 typedef struct {
@@ -61,6 +89,14 @@ void ler_entrada(const char *arquivo_entrada, Simulacao *sim) {
         exit(EXIT_FAILURE);
     }
 
+    // Todos os indices da simulacao sao int. Rejeitar uma matriz cujo numero
+    // de celulas nao cabe nesse tipo evita overflow em L*C e nos indices.
+    long long total_celulas = (long long)sim->L * (long long)sim->C;
+    if (total_celulas > INT_MAX || (size_t)total_celulas > SIZE_MAX / sizeof(int)) {
+        fprintf(stderr, "Erro: Dimensoes da matriz excedem o limite suportado.\n");
+        exit(EXIT_FAILURE);
+    }
+
     // 2a linha: configuracao do vento (secao 4.2)
     if (fscanf(arquivo, "%d %d %d",
                &sim->vento_linha,
@@ -94,8 +130,20 @@ void ler_entrada(const char *arquivo_entrada, Simulacao *sim) {
         exit(EXIT_FAILURE);
     }
 
-    sim->focos = (Foco *)malloc(sim->F * sizeof(Foco));
-    sim->zonas = (ZonaContencao *)malloc(sim->Z * sizeof(ZonaContencao));
+    if ((size_t)sim->F > SIZE_MAX / sizeof(Foco) ||
+        (size_t)sim->Z > SIZE_MAX / sizeof(ZonaContencao)) {
+        fprintf(stderr, "Erro: Quantidade de focos ou zonas excede o limite suportado.\n");
+        exit(EXIT_FAILURE);
+    }
+
+    sim->focos = malloc((size_t)sim->F * sizeof(*sim->focos));
+    sim->zonas = malloc((size_t)sim->Z * sizeof(*sim->zonas));
+    if ((sim->F > 0 && sim->focos == NULL) || (sim->Z > 0 && sim->zonas == NULL)) {
+        fprintf(stderr, "Erro: Falha na alocacao de focos ou zonas.\n");
+        free(sim->focos);
+        free(sim->zonas);
+        exit(EXIT_FAILURE);
+    }
 
     // proximas F linhas: focos iniciais de incendio
     for (int i = 0; i < sim->F; i++) {
@@ -166,15 +214,15 @@ void ler_entrada(const char *arquivo_entrada, Simulacao *sim) {
 // Aloca todos os vetores de tamanho L*C usados pela simulacao.
 // Nao entra no trecho cronometrado (secao 12).
 void alocar_estruturas(Simulacao *sim) {
-    int n = sim->L * sim->C;
+    size_t n = (size_t)sim->L * (size_t)sim->C;
 
-    sim->cobertura = (int *)malloc(n * sizeof(int));
-    sim->umidade = (int *)malloc(n * sizeof(int));
-    sim->estado_atual = (int *)malloc(n * sizeof(int));
-    sim->proximo_estado = (int *)malloc(n * sizeof(int));
-    sim->tempo_atual = (int *)malloc(n * sizeof(int));
-    sim->proximo_tempo = (int *)malloc(n * sizeof(int));
-    sim->ativacao = (int *)malloc(n * sizeof(int));
+    sim->cobertura = malloc(n * sizeof(*sim->cobertura));
+    sim->umidade = malloc(n * sizeof(*sim->umidade));
+    sim->estado_atual = malloc(n * sizeof(*sim->estado_atual));
+    sim->proximo_estado = malloc(n * sizeof(*sim->proximo_estado));
+    sim->tempo_atual = malloc(n * sizeof(*sim->tempo_atual));
+    sim->proximo_tempo = malloc(n * sizeof(*sim->proximo_tempo));
+    sim->ativacao = malloc(n * sizeof(*sim->ativacao));
 
     if (sim->cobertura == NULL || sim->umidade == NULL ||
         sim->estado_atual == NULL || sim->proximo_estado == NULL ||
@@ -190,26 +238,30 @@ void alocar_estruturas(Simulacao *sim) {
 // explicitamente que essa geracao seja feita por uma unica thread, e ela
 // nao faz parte do trecho cronometrado.
 void gerar_floresta(Simulacao *sim) {
+    // rand_r exige unsigned int*. Usar uma variavel do tipo correto evita a
+    // violacao de aliasing causada por converter int* para unsigned int*.
+    unsigned int seed = (unsigned int)sim->seed;
+
     for (int linha = 0; linha < sim->L; linha++) {
         for (int coluna = 0; coluna < sim->C; coluna++) {
             int idx = linha * sim->C + coluna;
 
-            // cast necessario: rand_r espera unsigned int*, seed e' declarado como int
             // cobertura: 0-9 agua, 10-19 solo exposto, 20-54 rasteira, 55-99 floresta (Quadro 6.2.1)
-            int valor = rand_r((unsigned int *)&sim->seed) % 100;
+            int valor = fire_rand_r(&seed) % 100;
             if (valor < 10) sim->cobertura[idx] = 0;
             else if (valor < 20) sim->cobertura[idx] = 1;
             else if (valor < 55) sim->cobertura[idx] = 2;
             else sim->cobertura[idx] = 3;
 
             // umidade gerada logo em seguida, ainda na mesma celula (ordem exigida pelo enunciado)
-            sim->umidade[idx] = rand_r((unsigned int *)&sim->seed) % 101;
+            sim->umidade[idx] = fire_rand_r(&seed) % 101;
 
             // agua/solo exposto = nao combustivel (0); rasteira/floresta comecam intactas (1)
             sim->estado_atual[idx] = (sim->cobertura[idx] <= 1) ? 0 : 1;
             sim->tempo_atual[idx] = 0;
         }
     }
+
 }
 
 // Aplica os focos iniciais de incendio (secao 6.5): marca as celulas como
@@ -324,7 +376,10 @@ void imprimir_resultado(int passos, int nao_combustiveis, int intactas, int em_c
 // Chamada de dentro da regiao paralela persistente (diretiva "orfa").
 void ativar_zonas(Simulacao *sim, int passo) {
     int n = sim->L * sim->C;
-    #pragma omp for schedule(runtime)
+    // Particionamento contiguo e fixo: preserva localidade e elimina o custo
+    // de distribuir dinamicamente uma iteracao por vez (padrao de
+    // schedule(runtime) no libgomp quando OMP_SCHEDULE nao e' definido).
+    #pragma omp for schedule(static)
     for (int i = 0; i < n; i++) {
         if (sim->ativacao[i] == passo && sim->estado_atual[i] == 1) {
             sim->estado_atual[i] = 4;
@@ -451,16 +506,22 @@ void simular(Simulacao *sim, int *passos_executados, int *total_ignicoes,
     int total = 0;
     int p_passo = -1; // -1 indica "nenhuma ignicao ocorreu" (secao 10)
     int p_qtd = 0;
-    // acumuladores do passo: precisam ser compartilhados (nao locais ao
-    // laco "omp for") para que a clausula reduction seja valida, e
-    // zerados a cada passo antes da reducao (o valor final da reducao
-    // combina com o valor que a variavel ja tinha antes do laco).
+    // Acumuladores compartilhados usados pelas reducoes. Eles comecam em zero
+    // e sao zerados novamente, pela thread do single final, antes do proximo
+    // passo. Assim evitamos uma regiao single e uma barreira extras por passo.
     int ignicoes_no_passo = 0;
     int tem_chamas = 0;
 
     // se nao houver nenhuma celula em chamas logo apos a inicializacao, ou
     // se P for 0, nenhum passo e' executado (secao 9)
     int continua = (sim->P > 0) && existe_em_chamas(sim);
+    if (!continua) {
+        *passos_executados = 0;
+        *total_ignicoes = 0;
+        *pico_passo = -1;
+        *pico_qtd = 0;
+        return;
+    }
 
     #pragma omp parallel num_threads(sim->T) default(none) \
         shared(sim, n, passo, continua, total, p_passo, p_qtd, ignicoes_no_passo, tem_chamas)
@@ -468,15 +529,13 @@ void simular(Simulacao *sim, int *passos_executados, int *total_ignicoes,
         while (continua) {
             ativar_zonas(sim, passo); // 1. ativar zonas programadas para este passo
 
-            #pragma omp single
-            {
-                ignicoes_no_passo = 0;
-                tem_chamas = 0;
-            } // barreira implicita: todas as threads veem os acumuladores zerados
-
             // 2. calcular proximo estado (cada idx e' independente; so os
             // contadores agregados precisam de reducao, sem critical/atomic)
-            #pragma omp for schedule(runtime) reduction(+:ignicoes_no_passo) reduction(||:tem_chamas)
+            // A atualizacao tem custo irregular (celulas intactas examinam
+            // oito vizinhos; as demais sao baratas). Guided equilibra esse
+            // custo sem o overhead extremo de dynamic,1; o bloco minimo
+            // ainda preserva boa localidade de memoria.
+            #pragma omp for schedule(guided, 1024) reduction(+:ignicoes_no_passo) reduction(||:tem_chamas)
             for (int idx = 0; idx < n; idx++) {
                 int ficou_em_chamas;
                 int ignizou = atualizar_celula(sim, idx, &ficou_em_chamas);
@@ -495,6 +554,12 @@ void simular(Simulacao *sim, int *passos_executados, int *total_ignicoes,
                 trocar_matrizes(sim); // 4. trocar as matrizes
                 passo++;
                 continua = (passo < sim->P) && tem_chamas; // 5. condicao de parada
+
+                // Prepara as variaveis de reducao para o proximo passo. A
+                // barreira implicita do single publica os zeros antes de as
+                // threads voltarem ao inicio do while.
+                ignicoes_no_passo = 0;
+                tem_chamas = 0;
             } // barreira implicita no fim do single: todas as threads veem o novo 'continua'
         }
     }
@@ -536,6 +601,10 @@ int main(int argc, char *argv[]) {
     int combustiveis_iniciais = contar_combustiveis_iniciais(&sim);
 
     int passos_executados, total_ignicoes, pico_passo, pico_qtd;
+
+    // Garante que a regiao solicite exatamente T threads mesmo se o ambiente
+    // externo tiver habilitado ajuste dinamico do tamanho da equipe.
+    omp_set_dynamic(0);
 
     double t_inicio = omp_get_wtime();
     simular(&sim, &passos_executados, &total_ignicoes, &pico_passo, &pico_qtd);
