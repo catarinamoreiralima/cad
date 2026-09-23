@@ -32,14 +32,14 @@
 {\large SSC0903 --- Computação de Alto Desempenho\par}
 {\large Primeiro Trabalho Prático\par}
 \vfill
-{\LARGE\bfseries Incendio Florestal\par}
+{\LARGE\bfseries Incêndio Florestal\par}
 \vspace{0.5cm}
 {\Large Implementações sequencial e paralela com OpenMP\par}
 \vfill
 \begin{tabular}{ll}
 \textbf{Integrante} & \textbf{Número USP} \\
 João Ricardo de Almeida Lustosa & 15453697 \\
-{Nome completo} & {Número USP} \\
+Catarina Moreira Lima & 8957221 \\
 {Nome completo} & {Número USP} \\
 \end{tabular}
 \vfill
@@ -111,7 +111,7 @@ dos resultados em relação à quantidade de threads e ao schedule.
 speedup e eficiência em diferentes cargas e quantidades de threads.
 \end{itemize}
 
-\section{Modelagem do problema}
+\section{Modelagem do problema}\label{sec:modelagem}
 
 \subsection{Domínio espacial e temporal}
 
@@ -129,11 +129,11 @@ Uma configuração inicial é construída antes do primeiro passo. Em cada
 iteração, a aplicação das regras produz a configuração seguinte, que se
 torna a base da próxima atualização.
 
-\subsection{Parâmetros e restrições da entrada}
+\subsection{Parâmetros e restrições da entrada}\label{sec:entrada}
 
 O arquivo informa $L$, $C$, $P$, a quantidade de threads $T$, a semente e
 o limiar de ignição. Em seguida, especifica as componentes do vento e sua
-intensidade, as quantidades de focos $F$ e zonas $Z$, as coordenadas dos
+intensidade, as quantidades de focos ($F$) e de zonas ($Z$), as coordenadas dos
 focos e os retângulos de contenção com seus passos de ativação.
 
 São exigidos $L,C,T,\mathrm{LIMIAR}>0$, $P,F,Z\geq0$,
@@ -151,7 +151,7 @@ As duas aplicações recebem somente o caminho do arquivo de entrada:
 O valor de $T$ é obtido desse arquivo, inclusive nos experimentos que
 variam a quantidade de threads.
 
-\subsection{Cobertura, umidade e inicialização determinística}
+\subsection{Cobertura, umidade e inicialização determinística}\label{sec:inicializacao}
 
 A cobertura e a umidade são propriedades fixas de cada célula. A
 inicialização percorre a matriz em ordem crescente de linhas e colunas,
@@ -180,7 +180,7 @@ configuração inicial no ambiente experimental.
 Água e solo exposto começam no estado não combustível. Vegetação rasteira
 e floresta começam intactas, exceto nas posições dos focos iniciais, que
 passam ao estado em chamas e recebem o tempo de queima de sua cobertura.
-A quantidade inicialmente combustível é registrada antes da evolução,
+A quantidade de células inicialmente combustíveis é registrada antes da evolução,
 incluindo os focos, para servir de denominador dos percentuais finais.
 
 \subsection{Estados e estruturas de armazenamento}
@@ -210,8 +210,8 @@ sua situação na evolução do incêndio.
 \end{table}
 
 Os dois pares de vetores de estado e tempo evitam que uma célula utilize
-uma atualização parcial de sua vizinha. Ao terminar o passo, seus
-ponteiros são trocados. O armazenamento da grade é $O(LC)$; somadas as
+uma atualização parcial de sua vizinha. Ao fim de cada passo, os
+ponteiros de cada par são trocados. O armazenamento da grade é $O(LC)$; somadas as
 descrições dos focos e zonas, o espaço é $O(LC+F+Z)$.
 
 \subsection{Zonas de contenção}
@@ -221,7 +221,7 @@ de ativação. Antes da simulação, constrói-se um mapa com o menor passo
 associado a cada célula nas zonas sobrepostas; posições sem zona recebem
 $-1$. A construção desse mapa não integra o trecho cronometrado.
 
-No início do passo programado, apenas células intactas tornam-se contenção.
+No início do passo programado, apenas células intactas se tornam contenção.
 Os demais estados permanecem inalterados: uma zona não apaga fogo existente
 nem recupera células queimadas. A ativação ocorre somente no passo indicado,
 e as células que se tornam contenção permanecem nesse estado.
@@ -229,7 +229,7 @@ e as células que se tornam contenção permanecem nesse estado.
 \subsection{Vizinhança e potencial de ignição}
 
 A propagação utiliza os oito vizinhos de Moore, ignorando posições fora
-da grade. Apenas vizinhos em chamas contribuem. Para uma célula alvo $(l,c)$
+da grade. Apenas vizinhos em chamas contribuem. Para uma célula-alvo $(l,c)$
 e um vizinho $(l_v,c_v)$, define-se a direção do vizinho para o alvo:
 \begin{equation}
 \Delta l=l-l_v,\qquad \Delta c=c-c_v.
@@ -245,21 +245,21 @@ O produto escalar pode assumir valores entre $-2$ e $2$. Valores positivos
 favorecem a propagação; negativos a desfavorecem. Quando $V=0$, o peso
 ajustado coincide com o básico.
 
-Se $f_i$ é o fator combustível e $u_i$ a umidade da célula alvo, seu
+Se $f_i$ é o fator combustível e $u_i$ a umidade da célula-alvo, seu
 potencial é
 \begin{equation}
 S_i=\sum_{v\text{ em chamas}}P_v,
 \qquad I_i=\left\lfloor\frac{S_i f_i(100-u_i)}{100}\right\rfloor.
 \end{equation}
-Uma célula intacta incendeia quando $I_i\geq\mathrm{LIMIAR}$.
+Uma célula intacta se incendeia quando $I_i\geq\mathrm{LIMIAR}$.
 Todos esses cálculos usam aritmética inteira, evitando diferenças de
 arredondamento na propagação entre as versões.
 
-\subsection{Transições, atualização síncrona e parada}
+\subsection{Transições, atualização síncrona e parada}\label{sec:transicoes}
 
 Após a ativação das zonas, células não combustíveis, queimadas e de
 contenção mantêm seus estados. Células intactas permanecem intactas ou
-incendeiam conforme o potencial. Células já em chamas têm seu tempo
+se incendeiam conforme o potencial. Células já em chamas têm seu tempo
 reduzido em uma unidade e tornam-se queimadas ao atingir zero.
 
 Uma célula recém-incendiada recebe o tempo completo de sua cobertura.
@@ -281,7 +281,7 @@ os focos iniciais não integram esse total. O pico registra a maior
 quantidade de novas ignições e, em empate, o primeiro passo. Na ausência
 de novas ignições, o resultado do pico é $(-1,0)$.
 
-Se $B_0$ é a quantidade inicialmente combustível, $Q$ a quantidade final
+Se $B_0$ é a quantidade de células inicialmente combustíveis, $Q$ a quantidade final
 queimada, $H$ a quantidade final em chamas e $K$ a quantidade final em
 contenção, os percentuais são
 \begin{equation}
@@ -297,20 +297,273 @@ e depois o tempo, pela operação $h\leftarrow31h+x$, utilizando
 \texttt{unsigned long long} conforme o enunciado. Ele complementa a
 comparação dos resultados, sem substituir a verificação das demais saídas.
 
-A saída contém passos executados, as cinco contagens finais, total e pico
-de ignições, os dois percentuais, checksum e tempo. Os percentuais têm duas
+A saída contém o número de passos executados, as cinco contagens finais,
+o total e o pico de ignições, os dois percentuais, o checksum e o tempo. Os percentuais têm duas
 casas decimais e o tempo tem seis; todos os campos, exceto o tempo, devem
 coincidir entre as versões.
 
 \section{Implementação sequencial}
 
+A versão sequencial, em \texttt{fire\_seq.c}, é a referência de correção e
+de desempenho do trabalho. Ela segue diretamente a modelagem da
+Seção~\ref{sec:modelagem}, sem otimizações que alterem a ordem das operações, de modo que
+cada etapa do passo corresponde a uma função com responsabilidade única.
+
+\subsection{Organização do código}
+
+Os parâmetros de entrada, os focos, as zonas e os vetores da
+Tabela~\ref{tab:vetores} são agrupados na estrutura \texttt{Simulacao},
+passada por ponteiro a todas as funções. Focos e zonas são representados
+pelas estruturas \texttt{Foco} e \texttt{ZonaContencao}. A
+Tabela~\ref{tab:funcoes-seq} resume as funções e indica quais pertencem
+ao trecho cronometrado.
+
+\begin{table}[htbp!]
+\centering
+\caption{Funções da versão sequencial.}
+\label{tab:funcoes-seq}
+\begin{tabularx}{\linewidth}{lXc}
+\toprule
+\textbf{Função} & \textbf{Responsabilidade} & \textbf{Cronometrada} \\
+\midrule
+\texttt{ler\_entrada} & Leitura e validação do arquivo e dos limites de tamanho. & Não \\
+\texttt{alocar\_estruturas} & Alocação dos sete vetores de tamanho $LC$. & Não \\
+\texttt{gerar\_floresta} & Sorteio da cobertura e da umidade; estado inicial. & Não \\
+\texttt{aplicar\_focos} & Marcação dos focos e validação da cobertura. & Não \\
+\texttt{construir\_mapa\_ativacao} & Menor passo de ativação por célula. & Não \\
+\texttt{ativar\_zonas} & Conversão de intactas em contenção no passo. & Sim \\
+\texttt{potencial\_ignicao} & Cálculo de $I_i$ para uma célula intacta. & Sim \\
+\texttt{calcular\_proximo\_estado} & Transições e contagem de ignições. & Sim \\
+\texttt{trocar\_matrizes} & Troca dos ponteiros atual/próximo. & Sim \\
+\texttt{existe\_em\_chamas} & Verificação da condição de parada. & Sim \\
+\texttt{calcular\_checksum} & Checksum na ordem linear. & Não \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Preparação da simulação}
+
+A leitura verifica o retorno de cada \texttt{fscanf} e aplica as
+restrições da Seção~\ref{sec:entrada}, encerrando o programa com \texttt{EXIT\_FAILURE}
+diante de qualquer inconsistência. A verificação de que os focos estão
+sobre células combustíveis só é possível após a geração da floresta e,
+por isso, é feita em \texttt{aplicar\_focos}. Como todos os índices da
+simulação são do tipo \texttt{int}, a leitura também rejeita grades em
+que $LC$ excede \texttt{INT\_MAX} ou em que o tamanho em bytes dos
+vetores não cabe em \texttt{size\_t}; verificação análoga é aplicada às
+quantidades de focos e zonas. Todas as alocações têm o retorno conferido.
+
+Na geração da floresta, a semente lida é copiada para uma variável
+local do tipo \texttt{unsigned int}, tipo exigido por \texttt{rand\_r},
+evitando a conversão de ponteiros entre \texttt{int} e
+\texttt{unsigned int}. As chamadas passam pela função
+\texttt{fire\_rand\_r}, que utiliza o \texttt{rand\_r} nativo em
+sistemas POSIX e, no Windows, onde essa função não existe, uma
+reimplementação do algoritmo da glibc. A ordem das chamadas é a descrita
+na Seção~\ref{sec:inicializacao}: primeiro a cobertura e, em seguida, a
+umidade da mesma célula.
+
+O mapa de ativação é inicializado com $-1$ e preenchido percorrendo cada
+retângulo; em zonas sobrepostas, prevalece o menor passo. Por fim, a
+quantidade de células inicialmente combustíveis $B_0$ é contada a partir
+da cobertura, antes do início da cronometragem.
+
+\subsection{Laço principal}
+
+O trecho cronometrado é delimitado por duas chamadas a
+\texttt{omp\_get\_wtime()}; o cabeçalho \texttt{omp.h} é incluído
+apenas para essa medição, e o programa não contém diretivas OpenMP.
+O laço segue a ordem definida na Seção~\ref{sec:transicoes}:
+
+\begin{lstlisting}
+se existe_em_chamas():
+    para passo = 0 ate P-1:
+        ativar_zonas(passo)
+        ignicoes = calcular_proximo_estado()
+        total += ignicoes
+        se ignicoes > pico_qtd: pico = (passo, ignicoes)
+        trocar_matrizes()
+        se nao existe_em_chamas(): interromper
+\end{lstlisting}
+
+A função \texttt{ativar\_zonas} percorre toda a grade e altera
+\texttt{estado\_atual} diretamente, o que é seguro porque ocorre antes
+da propagação do mesmo passo. Em \texttt{calcular\_proximo\_estado},
+cada célula é tratada conforme seu estado: não combustíveis, queimadas e
+contenções são copiadas com tempo zero; células em chamas têm o tempo
+decrementado e passam a queimadas ao atingir zero; células intactas
+chamam \texttt{potencial\_ignicao}. Todas as leituras são feitas em
+\texttt{estado\_atual} e \texttt{tempo\_atual}, e todas as escritas em
+\texttt{proximo\_estado} e \texttt{proximo\_tempo}, o que garante a
+atualização síncrona.
+
+O potencial percorre os deslocamentos $(d_l,d_c)\in\{-1,0,1\}^2$,
+exceto $(0,0)$, e descarta vizinhos fora da grade. Para cada vizinho em
+chamas, a direção até o alvo é $(-d_l,-d_c)$, a partir da qual se obtêm o
+peso básico, o alinhamento $A_v$ e o peso $P_v$ com limite inferior 1.
+O resultado final usa divisão inteira, equivalente ao piso para valores
+não negativos.
+
+O pico de ignições é atualizado apenas quando a contagem do passo é
+estritamente maior que o máximo anterior, o que mantém o primeiro passo
+em caso de empate. Como \texttt{pico\_passo} começa em $-1$ e
+\texttt{pico\_qtd} em $0$, o resultado $(-1,0)$ é preservado quando não
+há novas ignições. A troca das configurações é feita apenas pela troca
+dos ponteiros, sem cópia de dados.
+
+\subsection{Finalização e custo}
+
+Após a cronometragem, são contados os estados finais, calculados os
+percentuais com $B_0$ como denominador e obtido o checksum, acumulado em
+\texttt{unsigned long long}, cujo estouro é aritmética modular bem
+definida em C. A memória é liberada ao final.
+
+Cada passo realiza três varreduras da grade: ativação das zonas, cálculo
+do próximo estado e verificação de parada, esta última interrompida no
+primeiro foco encontrado. Como cada célula intacta examina no máximo
+oito vizinhos, o custo por passo é $O(LC)$ e o custo total do trecho
+cronometrado é $O(P\,LC)$. O trabalho por célula, porém, não é uniforme:
+células intactas são mais caras que as demais, o que é relevante para a
+escolha do escalonamento na versão paralela.
+
 \section{Implementação paralela}
+
+A versão paralela, em \texttt{fire\_omp.c}, parte do código sequencial e
+mantém idênticas a leitura, a validação, a alocação, a geração da
+floresta, a aplicação dos focos, a construção do mapa de ativação e o
+cálculo dos resultados finais. Todas essas etapas estão fora do trecho
+cronometrado, e a geração da floresta deve, por exigência do enunciado,
+ser feita por uma única thread. A paralelização concentra-se, portanto,
+no laço de passos, encapsulado na função \texttt{simular}.
 
 \subsection{Estratégia de paralelização}
 
+Como a atualização é síncrona, o próximo estado de cada célula depende
+apenas de \texttt{estado\_atual}, \texttt{tempo\_atual} e dos dados fixos,
+e cada iteração escreve somente na própria posição de
+\texttt{proximo\_estado} e \texttt{proximo\_tempo}. Não há, assim,
+dependência entre iterações de um mesmo passo, e o laço sobre as células
+pode ser dividido entre threads por decomposição de domínio sobre o
+índice linear. Entre passos, por outro lado, a dependência é total: o
+passo $p+1$ só pode começar depois que toda a configuração do passo $p$
+estiver pronta.
+
+Em vez de abrir uma região paralela a cada passo, o programa utiliza uma
+única região \texttt{parallel} persistente, que envolve todo o laço
+\texttt{while}. As threads são criadas uma vez e percorrem juntas os
+passos, o que evita o custo repetido de criação e sincronização da
+equipe ao longo de até $P$ passos. Dentro dela, cada passo é organizado
+da seguinte forma:
+
+\begin{lstlisting}
+#pragma omp parallel num_threads(T)
+while (continua):
+    #pragma omp for schedule(static)        // ativar_zonas
+    #pragma omp for schedule(guided, 1024) \
+            reduction(+:ignicoes) reduction(||:tem_chamas)
+    #pragma omp single                      // estatisticas, troca, parada
+\end{lstlisting}
+
+A ativação das zonas é feita em \texttt{ativar\_zonas} por um
+\texttt{omp for} órfão, isto é, uma diretiva de compartilhamento de
+trabalho fora do escopo léxico da região paralela, que se associa à
+equipe em execução. Cada iteração lê \texttt{ativacao[i]}, que é fixo, e
+escreve apenas em \texttt{estado\_atual[i]}, sem conflito entre
+threads.
+
+A atualização das células foi reorganizada na função
+\texttt{atualizar\_celula}, que processa uma única posição e não contém
+diretivas OpenMP; o laço que a chama é o que recebe o \texttt{omp for}.
+Além do indicador de nova ignição, a função informa se a célula estará
+em chamas no próximo estado. Esses valores são combinados por duas
+reduções: soma para as novas ignições e disjunção lógica para a
+existência de fogo. Com isso, a condição de parada passa a ser obtida
+no próprio laço de atualização, e a varredura adicional de
+\texttt{existe\_em\_chamas} a cada passo, presente na versão sequencial,
+deixa de ser necessária. A função continua sendo usada apenas na
+verificação inicial, antes da região paralela; se não houver fogo ou se
+$P=0$, a região nem chega a ser aberta.
+
+Em \texttt{potencial\_ignicao}, os oito deslocamentos de Moore são
+armazenados em vetores constantes, e o laço sobre eles foi reescrito sem
+desvios (\texttt{continue}), para permitir a vetorização com
+\texttt{omp simd reduction(+:S)}. Um vizinho fora da grade tem o índice
+substituído pelo da própria célula, sempre válido, e sua contribuição é
+anulada pelo indicador \texttt{dentro}; o mesmo ocorre com vizinhos que
+não estão em chamas. A soma $S_i$ resultante é a mesma da versão
+sequencial.
+
 \subsection{Compartilhamento e sincronização}
 
+A região paralela usa \texttt{default(none)}, o que obriga a declarar
+explicitamente o escopo de cada variável. São compartilhados o ponteiro
+para a estrutura \texttt{Simulacao}, o tamanho $n$ e as variáveis de
+controle do laço: \texttt{passo}, \texttt{continua}, o total e o pico
+de ignições e os dois acumuladores das reduções. O índice dos laços
+\texttt{omp for} e as variáveis locais de \texttt{atualizar\_celula} e
+\texttt{potencial\_ignicao} são privados de cada thread. Os vetores
+da simulação são compartilhados, mas nenhuma posição é escrita por mais
+de uma thread no mesmo laço.
+
+A corretude depende das barreiras implícitas ao final de cada construção
+de compartilhamento de trabalho, que reproduzem a ordem da
+Seção~\ref{sec:transicoes}:
+
+\begin{itemize}
+\item a barreira ao final da ativação garante que todas as contenções do
+passo estejam aplicadas antes que qualquer thread avalie um vizinho;
+\item a barreira ao final da atualização garante que todos os próximos
+estados estejam escritos e que as reduções estejam combinadas antes do
+bloco \texttt{single};
+\item a barreira ao final do \texttt{single} garante que a troca de
+ponteiros e os novos valores de \texttt{passo} e \texttt{continua} sejam
+vistos por todas as threads antes da próxima iteração do
+\texttt{while}.
+\end{itemize}
+
+As operações de custo constante do passo, como a atualização do total e
+do pico, a troca dos vetores, o incremento de \texttt{passo} e o cálculo
+de \texttt{continua}, são feitas por uma única thread no bloco
+\texttt{single}. O mesmo bloco zera os acumuladores das reduções para o
+passo seguinte, o que dispensa um segundo \texttt{single} e uma barreira
+adicional por passo. Não há uso de \texttt{critical} nem de
+\texttt{atomic}: toda a combinação de resultados parciais é feita pelas
+reduções.
+
+O número de threads é definido por \texttt{num\_threads(T)}, com o valor
+lido do arquivo de entrada, e \texttt{omp\_set\_dynamic(0)} é chamado
+antes da região para impedir que o ambiente reduza o tamanho da equipe.
+Como as reduções operam sobre inteiros, cuja soma é associativa, os
+resultados não dependem da ordem em que as threads combinam seus valores
+parciais. As saídas são, portanto, as mesmas para qualquer quantidade de
+threads e qualquer política de escalonamento.
+
 \subsection{Escalonamento}
+
+Os dois laços paralelos têm perfis de custo distintos e, por isso,
+utilizam políticas diferentes. A ativação das zonas executa trabalho
+praticamente uniforme por iteração: uma comparação e, eventualmente,
+uma escrita. Para ela, usa-se \texttt{schedule(static)}, que atribui a
+cada thread um bloco contíguo e fixo de índices, com sobrecarga mínima
+e boa localidade de memória. A política é declarada explicitamente
+porque, sem a cláusula, o escalonamento adotado depende da
+implementação.
+
+Na atualização das células, o custo por iteração é irregular. Células
+intactas calculam o potencial sobre oito vizinhos, enquanto as demais
+apenas copiam ou decrementam valores. A distribuição desse custo muda ao
+longo da simulação, à medida que a frente de fogo avança e as regiões
+queimadas e contidas crescem. Uma divisão estática em blocos iguais pode
+atribuir a uma thread uma faixa com muito mais células intactas que a
+de outra. Por isso, o laço usa \texttt{schedule(guided, 1024)}: os
+blocos começam grandes e diminuem conforme o trabalho restante,
+equilibrando a carga no final do laço. O tamanho mínimo de 1024
+iterações limita a quantidade de requisições ao escalonador e preserva
+a localidade, evitando a sobrecarga de políticas como
+\texttt{dynamic} com blocos unitários.
+
+A comparação entre esta política e outras alternativas, exigida pelo
+enunciado, é apresentada na Seção~\ref{sec:resultados}.
 
 \section{Validação da correção}
 
@@ -356,7 +609,7 @@ Versão dos fontes & \pendente \\
 \subsection{Cargas e protocolo de execução}
 \begin{table}[htbp]
 \centering
-\caption{Cargas fornecidas. T indica o valor original, que pode variar nos experimentos.}
+\caption{Cargas fornecidas. $T$ indica o valor original, que pode variar nos experimentos.}
 \begin{tabular}{lrrrrrr}
 \toprule
 \textbf{Carga} & $L$ & $C$ & $P$ & $T$ & $F$ & $Z$ \\
@@ -371,10 +624,11 @@ Grande & 2500 & 2500 & 100 & 8 & 10 & 6 \\
 
 \subsection{Delimitação do trecho cronometrado}
 
-O recorte especificado inclui ativação das zonas, propagação, atualização
-dos estados e tempos, estatísticas, troca das matrizes e verificação da
-parada. Exclui leitura, validação, alocação, geração da floresta, definição
-dos focos, construção do mapa, checksum, percentuais e impressão. A medição
+O recorte especificado inclui a ativação das zonas, a propagação, a
+atualização dos estados e tempos, as estatísticas, a troca das matrizes e a
+verificação da parada. Exclui a leitura, a validação, a alocação, a geração
+da floresta, a definição dos focos, a construção do mapa, o checksum, os
+percentuais e a impressão. A medição
 deve utilizar \texttt{omp\_get\_wtime()}.
 
 
@@ -387,7 +641,7 @@ E(T)=\frac{S(T)}{T}\times100\%.
 A referência é o programa sequencial. A versão OpenMP com uma thread é
 uma configuração adicional e não substitui essa referência.
 
-\section{Resultados}
+\section{Resultados}\label{sec:resultados}
 
 \begin{table}[htbp]
 \centering\small
