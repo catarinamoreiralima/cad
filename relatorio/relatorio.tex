@@ -357,9 +357,11 @@ Na geração da floresta, a semente lida é copiada para uma variável
 local do tipo \texttt{unsigned int}, tipo exigido por \texttt{rand\_r},
 evitando a conversão de ponteiros entre \texttt{int} e
 \texttt{unsigned int}. As chamadas passam pela função
-\texttt{fire\_rand\_r}, que utiliza o \texttt{rand\_r} nativo em
-sistemas POSIX e, no Windows, onde essa função não existe, uma
-reimplementação do algoritmo da glibc. A ordem das chamadas é a descrita
+\texttt{fire\_rand\_r}, que utiliza o \texttt{rand\_r} nativo no
+Linux e, no Windows e no macOS, uma reimplementação do algoritmo da
+glibc. No Windows, \texttt{rand\_r} não existe; no macOS, existe, mas
+emprega outro algoritmo e produziria uma floresta diferente para a mesma
+semente. Assim, a configuração inicial é a mesma nas três plataformas. A ordem das chamadas é a descrita
 na Seção~\ref{sec:inicializacao}: primeiro a cobertura e, em seguida, a
 umidade da mesma célula.
 
@@ -570,41 +572,62 @@ enunciado, é apresentada na Seção~\ref{sec:resultados}.
 
 \begin{table}[htbp]
 \centering
-\caption{Validação da versão final.}
-\begin{tabularx}{\linewidth}{Xlll}
+\caption{Validação da versão final (macOS).}
+\begin{tabularx}{\linewidth}{@{}p{2.6cm}p{1.4cm}p{2.2cm}X@{}}
 \toprule
 \textbf{Caso} & \textbf{Threads} & \textbf{Schedule} & \textbf{Resultado} \\
 \midrule
-Carga pequena & \pendente & \pendente & \pendente \\
-Carga média & \pendente & \pendente & \pendente \\
-Carga grande & \pendente & \pendente & \pendente \\
-Zero passos / sem focos & \pendente & \pendente & \pendente \\
-Contenções sobrepostas & \pendente & \pendente & \pendente \\
+Carga pequena & 1--8 & guided(1024) & Checksum e passos idênticos entre \texttt{fire\_seq} e \texttt{fire\_omp} nas 90 execuções (checksum $17073017104646724864$; 80 passos) \\
+Carga média & 1--8 & guided(1024) & Checksum e passos idênticos nas 90 execuções (checksum $17187382406529706254$; 100 passos) \\
+Carga grande & 1--8 & guided(1024) & Checksum e passos idênticos nas 90 execuções (checksum $14825089465781038537$; 100 passos) \\
 \bottomrule
 \end{tabularx}
 \end{table}
 
+Para cada carga, o checksum e a quantidade de passos executados
+coincidiram em todas as 90 execuções (versão sequencial e versão
+OpenMP com $T$ de 2 a 8, dez repetições cada), confirmando que o
+resultado independe da quantidade de threads, conforme exigido pelo
+enunciado. Nas três cargas a simulação consumiu todos os $P$ passos
+configurados, isto é, o incêndio não se extinguiu antes do limite
+definido na Tabela de cargas. As entradas com zero passos, sem focos e
+com zonas de contenção sobrepostas foram contempladas na validação da
+entrada (Seção~\ref{sec:entrada}) e na lógica de \texttt{construir\_mapa\_ativacao},
+mas ainda não possuem uma execução automatizada dedicada nos scripts de
+teste; essa cobertura será complementada nos experimentos do cluster
+Linux.
 
-\section{Ambiente e metodologia experimental}
+
+\section{Ambiente e metodologia experimental}\label{sec:ambiente}
 
 \subsection{Ambiente das duas versões}
 \begin{table}[htbp]
 \centering
-\caption{Ambiente experimental.}
+\caption{Ambiente experimental --- macOS.}
 \begin{tabularx}{\linewidth}{lX}
 \toprule
 \textbf{Item} & \textbf{Configuração} \\
 \midrule
-CPU e núcleos & \pendente \\
-Memória e sistema & \pendente \\
-Compilador & \pendente \\
-Compilação sequencial & \pendente \\
-Compilação paralela & \pendente \\
-Execução OpenMP & \pendente \\
-Versão dos fontes & \pendente \\
+CPU e núcleos & Apple M4 (4 núcleos de desempenho + 6 de eficiência; 10 núcleos no total, sem SMT/hyperthreading) \\
+Memória e sistema & 16\,GiB de RAM; macOS 26.5.2 (build 25F84); arquitetura arm64 (Apple Silicon) \\
+Compilador & Apple clang 17.0.0 (clang-1700.6.4.2), \texttt{target=arm64-apple-darwin25.5.0}, com \texttt{libomp} do Homebrew (\texttt{/opt/homebrew/opt/libomp}) \\
+Compilação sequencial & \texttt{Makefile.macos}, alvo \texttt{fire\_seq}: \texttt{clang -O2 -Wall -Wextra -std=c11 -Xpreprocessor -fopenmp -I<libomp>/include -L<libomp>/lib -lomp fire\_seq.c -o fire\_seq} \\
+Compilação paralela & mesmos parâmetros de compilação, alvo \texttt{fire\_omp} (\texttt{fire\_omp.c}) \\
+Execução OpenMP & \texttt{T} lido do arquivo de entrada e fixado com \texttt{num\_threads(T)} e \texttt{omp\_set\_dynamic(0)}; a política de escalonamento do laço de atualização (\texttt{guided(1024)} nesta rodada) é fixada em tempo de compilação na diretiva \texttt{omp for} \\
+Versão dos fontes & commit \texttt{fe355af} (branch \texttt{main}) \\
 \bottomrule
 \end{tabularx}
 \end{table}
+
+\noindent\textbf{Observação sobre o ambiente.} Todos os resultados
+apresentados na Seção~\ref{sec:resultados} e nas seções seguintes desta
+versão do relatório foram obtidos exclusivamente no ambiente macOS
+descrito acima, com o script \texttt{scripts/run\_macos.sh}. Os
+experimentos equivalentes no cluster Linux da disciplina (usando
+\texttt{scripts/run\_linux.sh} e \texttt{Makefile}) ainda serão
+executados; quando disponíveis, serão incorporados a uma versão
+revisada deste relatório, junto com a comparação de uma segunda
+política de escalonamento exigida pelo enunciado.
 
 \subsection{Cargas e protocolo de execução}
 \begin{table}[htbp]
@@ -621,6 +644,17 @@ Grande & 2500 & 2500 & 100 & 8 & 10 & 6 \\
 \end{tabular}
 \end{table}
 
+Cada configuração foi executada pelo script \texttt{scripts/run\_macos.sh}:
+a versão sequencial é executada uma vez por repetição (sem variar
+threads) e a versão paralela é executada para $T\in\{1,\dots,8\}$, com o
+$4^{\text{o}}$ campo da primeira linha da entrada sobrescrito
+temporariamente a cada valor de $T$ testado; os demais parâmetros da
+Tabela acima são mantidos. Foram realizadas 10 repetições por combinação
+de carga e $T$, totalizando $3\times(10+8\times10)=270$ execuções nesta
+rodada. Nesta versão do relatório, apenas a política
+\texttt{guided(1024)} foi medida no macOS; a comparação com uma segunda
+política de escalonamento, exigida pelo enunciado, será obtida junto com
+os experimentos no cluster Linux.
 
 \subsection{Delimitação do trecho cronometrado}
 
@@ -643,15 +677,48 @@ uma configuração adicional e não substitui essa referência.
 
 \section{Resultados}\label{sec:resultados}
 
+\subsection{MacOs}
+Os resultados desta seção foram obtidos no ambiente macOS descrito na
+Seção~\ref{sec:ambiente}, com a política \texttt{guided(1024)}. Cada
+valor de $t_{\mathrm{seq}}$ e $t_{\mathrm{omp}}$ é a média aritmética de
+10 repetições; o script de execução também registrou o desvio entre
+repetições (não incluído na tabela), pequeno para as cargas média e
+grande e um pouco maior, em termos relativos, para a carga pequena, cujo
+tempo de execução é da ordem de dezenas de milissegundos. Os
+experimentos no cluster Linux da disciplina, incluindo a comparação com
+uma segunda política de escalonamento, serão incorporados a uma versão
+revisada desta tabela e dos gráficos.
+
 \begin{table}[htbp]
 \centering\small
-\caption{Tempos e métricas de desempenho.}
+\caption{Tempos e métricas de desempenho (macOS, Apple M4, política \texttt{guided(1024)}).}
 \begin{tabular}{llrrrrr}
 \toprule
 \textbf{Carga} & \textbf{Schedule} & $T$ & $t_{\mathrm{seq}}$ (s) & $t_{\mathrm{omp}}$ (s) & $S(T)$ & $E(T)$ (\%) \\
 \midrule
-\pendente & \pendente & \pendente & \pendente & \pendente & \pendente & \pendente \\
-\pendente & \pendente & \pendente & \pendente & \pendente & \pendente & \pendente \\
+\textbf{Pequena}  & guided(1024) & 2 & 0.083092 & 0.052361 & 1.59 & 79.35 \\
+                  & guided(1024) & 3 & 0.083092 & 0.035459 & 2.34 & 78.11 \\
+                  & guided(1024) & 4 & 0.083092 & 0.032095 & 2.59 & 64.72 \\
+                  & guided(1024) & 5 & 0.083092 & 0.029900 & 2.78 & 55.58 \\
+                  & guided(1024) & 6 & 0.083092 & 0.028959 & 2.87 & 47.82 \\
+                  & guided(1024) & 7 & 0.083092 & 0.027257 & 3.05 & 43.55 \\
+                  & guided(1024) & 8 & 0.083092 & 0.033282 & 2.50 & 31.21 \\
+\midrule
+\textbf{Média}    & guided(1024) & 2 & 0.942207 & 0.588427 & 1.60 & 80.06 \\
+                  & guided(1024) & 3 & 0.942207 & 0.456809 & 2.06 & 68.75 \\
+                  & guided(1024) & 4 & 0.942207 & 0.376859 & 2.50 & 62.50 \\
+                  & guided(1024) & 5 & 0.942207 & 0.346127 & 2.72 & 54.44 \\
+                  & guided(1024) & 6 & 0.942207 & 0.328233 & 2.87 & 47.84 \\
+                  & guided(1024) & 7 & 0.942207 & 0.300556 & 3.14 & 44.78 \\
+                  & guided(1024) & 8 & 0.942207 & 0.278883 & 3.38 & 42.23 \\
+\midrule
+\textbf{Grande}   & guided(1024) & 2 & 3.302497 & 2.267915 & 1.46 & 72.81 \\
+                  & guided(1024) & 3 & 3.302497 & 1.727732 & 1.91 & 63.72 \\
+                  & guided(1024) & 4 & 3.302497 & 1.422973 & 2.32 & 58.02 \\
+                  & guided(1024) & 5 & 3.302497 & 1.341581 & 2.46 & 49.23 \\
+                  & guided(1024) & 6 & 3.302497 & 1.258350 & 2.62 & 43.74 \\
+                  & guided(1024) & 7 & 3.302497 & 1.252327 & 2.64 & 37.67 \\
+                  & guided(1024) & 8 & 3.302497 & 1.181848 & 2.79 & 34.93 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -662,8 +729,92 @@ uma configuração adicional e não substitui essa referência.
 
 \section{Análise e discussão}
 
+\textbf{Todas as observações abaixo se referem exclusivamente ao
+ambiente macOS} descrito na Seção~\ref{sec:ambiente} e à política
+\texttt{guided(1024)}; conclusões sobre outros escalonamentos e sobre o
+comportamento no cluster Linux ficam para a versão revisada deste
+relatório.
+
+\textbf{Ganho de threads limitado pelo número de núcleos de desempenho.}
+O Apple M4 utilizado possui apenas 4 núcleos de desempenho e 6 de
+eficiência, sem SMT. Para as três cargas, o speedup cresce de forma
+quase linear até $T=3$--$4$ (por exemplo, $S(4)=2.50$ na carga média) e
+passa a crescer bem mais devagar a partir daí: entre $T=4$ e $T=8$ a
+carga média ganha apenas $0.88$ de speedup adicional, contra $1.66$
+entre $T=1$ e $T=4$. Esse comportamento é compatível com threads
+adicionais sendo atendidas por núcleos de eficiência, mais lentos que os
+de desempenho, e explica por que $E(T)$ cai de forma monótona em todas
+as cargas: de $83$--$84\%$ em $T=1$ para $31$--$43\%$ em $T=8$.
+
+\textbf{A carga grande escala pior do que a carga média.} Em $T=8$, a
+carga média atinge $S(8)=3.38$ e $E(8)=42.23\%$, enquanto a carga grande
+atinge apenas $S(8)=2.79$ e $E(8)=34.93\%$, apesar de ter mais trabalho
+por passo ($2500\times2500$ contra $1200\times1500$ células). Esse
+resultado é o oposto do que a lei de Amdahl prevista isoladamente
+sugeriria (cargas maiores tendem a diluir melhor a fração serial fixa
+por passo). Uma explicação provável é a pressão sobre a hierarquia de
+memória: a grade da carga grande ($\approx 6{,}25$ milhões de células,
+com sete vetores de tamanho $LC$) não cabe nos caches compartilhados
+pelos núcleos de desempenho, de modo que, ao aumentar o número de
+threads ativas, a carga passa a ser limitada pela largura de banda de
+memória, e não apenas pelo paralelismo de cálculo. Essa hipótese deve
+ser reexaminada no cluster Linux, cuja hierarquia de cache e memória é
+distinta.
+
+\textbf{Queda de speedup na carga pequena em $T=8$.} A carga pequena tem
+o pior comportamento relativo em threads altas: o speedup sobe até
+$S(7)=3.05$ e cai para $S(8)=2.50$, o único caso, entre as três cargas,
+em que aumentar $T$ piora o tempo de execução. Como o trecho
+cronometrado da carga pequena dura poucas dezenas de milissegundos e
+tem apenas $200\,000$ células distribuídas por passo, o custo fixo de
+cada barreira implícita e de cada região de trabalho compartilhado
+(Seção~\ref{sec:transicoes}) passa a ser proporcionalmente maior à
+medida que $T$ cresce e que a fatia de trabalho por thread diminui;
+com 8 threads, cada uma recebe em média $25\,000$ células por passo,
+valor próximo do tamanho mínimo de bloco do \texttt{guided(1024)}, o
+que reduz a eficácia do balanceamento de carga e evidencia o custo de
+sincronização por passo. Esse efeito é uma evidência de que, para
+cargas pequenas, threads demais podem ser contraproducentes com essa
+política de escalonamento --- um ponto a ser confrontado com a segunda
+política de escalonamento ainda pendente.
+
+\textbf{Consistência dos resultados.} Como reportado na
+Seção~\ref{sec:resultados} anterior (validação), o checksum e a
+quantidade de passos executados foram idênticos entre \texttt{fire\_seq}
+e \texttt{fire\_omp} para todo $T$ de 1 a 8, nas três cargas, confirmando
+que a paralelização não altera o resultado da simulação --- apenas o seu
+tempo de execução, exatamente como esperado da modelagem com atualização
+síncrona e reduções (Seção~\ref{sec:transicoes}).
 
 \section{Conclusão}
+
+As implementações sequencial e paralela atendem aos requisitos do
+enunciado: mesma saída determinística para uma dada entrada,
+independentemente da quantidade de threads, com a versão paralela
+construída sobre uma região \texttt{parallel} persistente, \texttt{omp
+for} com \texttt{default(none)}, reduções para os contadores e SIMD no
+cálculo do potencial de ignição. No ambiente macOS avaliado (Apple M4,
+10 núcleos, política \texttt{guided(1024)}), a versão OpenMP produziu
+speedups entre $2.50\times$ e $3.38\times$ em relação à versão
+sequencial, com eficiência decrescente à medida que a quantidade de
+threads ultrapassa o número de núcleos de desempenho da máquina. A carga
+grande escalou pior do que a média, indicando possível limitação de
+banda de memória, e a carga pequena chegou a piorar ao usar 8 threads,
+evidenciando que o custo de sincronização por passo pode superar o
+ganho de paralelismo quando a carga de trabalho é pequena.
+
+Esses resultados são específicos do ambiente macOS descrito na
+Seção~\ref{sec:ambiente} e de uma única política de escalonamento. Os
+próximos passos deste trabalho são: (i) executar o mesmo protocolo
+experimental no cluster Linux da disciplina, com \texttt{scripts/run\_linux.sh}
+e o \texttt{Makefile} padrão; (ii) medir pelo menos uma segunda política
+de escalonamento (por exemplo, \texttt{static} ou \texttt{dynamic}) para
+o laço de atualização, conforme exigido pelo enunciado; e (iii)
+completar a validação de correção com os casos de zero passos/sem focos
+e de zonas de contenção sobrepostas. Espera-se que o cluster Linux, com
+mais núcleos e uma hierarquia de memória diferente da do M4, permita
+avaliar se a queda de eficiência observada aqui é uma limitação da
+arquitetura específica ou do algoritmo de paralelização em si.
 
 
 \begin{thebibliography}{9}
