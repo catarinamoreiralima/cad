@@ -533,9 +533,20 @@ void simular(Simulacao *sim, int *passos_executados, int *total_ignicoes,
             // 2. calcular proximo estado (cada idx e' independente; so os
             // contadores agregados precisam de reducao, sem critical/atomic)
             // A atualizacao tem custo irregular (celulas intactas examinam
-            // oito vizinhos; as demais sao baratas). Guided equilibra esse
-            // custo sem o overhead extremo de dynamic,1; o bloco minimo
-            // ainda preserva boa localidade de memoria.
+            // oito vizinhos; as demais sao baratas). A distribuicao desse
+            // custo muda ao longo da simulacao, a medida que a frente de
+            // fogo avanca e as regioes queimadas/contidas crescem, entao um
+            // schedule(static) tende a desbalancear conforme T cresce. Entre
+            // as tres politicas comparadas experimentalmente (Secao
+            // Escalonamento do relatorio: static, dynamic(1024) e
+            // guided(1024)), guided(1024) obteve o melhor equilibrio entre
+            // balanceamento e overhead de escalonador nas cargas media e
+            // grande com T alto, e ficou proximo do melhor tambem na carga
+            // pequena; por isso foi escolhida como a politica final. Os
+            // blocos comecam grandes e diminuem conforme o trabalho
+            // restante; o tamanho minimo de 1024 iteracoes limita a
+            // quantidade de requisicoes ao escalonador e preserva a
+            // localidade de memoria.
             #pragma omp for schedule(guided, 1024) reduction(+:ignicoes_no_passo) reduction(||:tem_chamas)
             for (long long idx = 0; idx < n; idx++) {
                 if (sim->ativacao[idx] == passo && sim->estado_atual[idx] == 1) {
