@@ -5,7 +5,7 @@ LDLIBS := -fopenmp
 
 .PHONY: all clean
 
-all: fire_seq fire_omp fire_mpi_omp
+all: fire_mpi_omp $(patsubst %.c,%,$(wildcard fire_seq.c fire_omp.c))
 
 fire_seq: fire_seq.c
 	$(CC) $(CFLAGS) -o $@ $< $(LDLIBS)

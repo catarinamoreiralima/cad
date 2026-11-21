@@ -1,0 +1,121 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[brazilian]{babel}
+\usepackage{lmodern}
+\usepackage[margin=2.4cm]{geometry}
+\usepackage{microtype,tikz}
+\usetikzlibrary{arrows.meta}
+\setlength{\parskip}{0.4em}
+\setlength{\parindent}{0pt}
+\raggedbottom
+
+\begin{document}
+{\small Universidade de São Paulo \enspace · \enspace ICMC \enspace · \enspace SSC0903}\\[0.5em]
+{\LARGE\bfseries Simulação paralela de incêndio florestal}\\[0.35em]
+{\large Segundo trabalho prático de Computação de Alto Desempenho}
+
+\section{Solução híbrida com MPI e OpenMP}
+A floresta é uma matriz de $L$ linhas por $C$ colunas. A partir dos focos
+iniciais, a simulação calcula a evolução do fogo sob a influência do vento, da
+cobertura, da umidade e das zonas de contenção. Cada passo depende do estado
+da floresta no passo anterior. O programa \texttt{fire\_mpi\_omp.c} distribui
+a matriz entre processos MPI e atualiza cada parte com threads OpenMP.
+A seguir, a modelagem PCAM descreve as tarefas, suas dependências e a
+atribuição do trabalho aos recursos de processamento.
+
+\subsection{Particionamento}
+O particionamento é por dados. A tarefa de entrada valida os parâmetros,
+gera a cobertura e a umidade na ordem linear da matriz, aplica os focos
+e registra o primeiro passo de contenção de cada célula. Durante a simulação,
+a unidade de trabalho é a atualização de uma célula em um passo.
+
+Primeiro, as células intactas com contenção programada para o passo entram
+em contenção. Depois, cada célula intacta consulta até oito vizinhas para
+calcular seu potencial de ignição. Cada tarefa lê a configuração atual e
+escreve o estado e o tempo de queima seguintes apenas na sua posição.
+Assim, uma nova ignição só pode influenciar outras células no passo seguinte.
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[x=1cm,y=1cm, font=\small,
+  tarefa/.style={draw,rounded corners=2pt,align=center,inner sep=5pt,fill=black!3},
+  fluxo/.style={-{Stealth[length=2mm]},semithick}]
+\node[tarefa] (entrada) at (0,0) {Preparar e distribuir a floresta};
+\coordinate (inicio) at (0,-0.55);
+\node[tarefa] (ca) at (-3,-1.18) {Ativar contenções na faixa A};
+\node[tarefa] (cb) at (3,-1.18) {Ativar contenções na faixa B};
+\node[tarefa] (aa) at (-3,-2.6) {Atualizar células da faixa A};
+\node[tarefa] (ab) at (3,-2.6) {Atualizar células da faixa B};
+\node[tarefa] (reduzir) at (0,-3.9) {Somar ignições e chamas, trocar vetores e decidir a parada};
+\node[tarefa] (saida) at (0,-5.15) {Contar estados, reunir a configuração final e imprimir};
+\draw (entrada) -- (inicio);
+\draw[fluxo] (inicio) -| (ca); \draw[fluxo] (inicio) -| (cb);
+\draw[fluxo] (ca) -- (aa); \draw[fluxo] (cb) -- (ab);
+\draw[fluxo,dashed] (ca.south east) -- (ab.north west);
+\draw[fluxo,dashed] (cb.south west) -- (aa.north east);
+\draw[fluxo] (aa.south) -- (aa.south |- reduzir.north);
+\draw[fluxo] (ab.south) -- (ab.south |- reduzir.north);
+\draw[fluxo] (reduzir.east) -- (6.15,-3.9) -- node[sloped,above]{próximo passo} (6.15,-0.55) -- (inicio);
+\draw[fluxo] (reduzir) -- node[right]{encerrar} (saida);
+\end{tikzpicture}
+\caption{Dependências entre duas faixas adjacentes. As setas tracejadas
+representam a leitura da fronteira vizinha. Com zero passos ou sem focos
+iniciais, a preparação leva diretamente à apuração final.}
+\end{figure}
+
+\clearpage
+\subsection{Comunicação}
+O processo de rank 0 difunde os parâmetros com \texttt{MPI\_Bcast} e
+distribui os dados de cada faixa com \texttt{MPI\_Scatterv}.
+A cada passo, após as contenções, processos adjacentes trocam suas linhas
+de fronteira com \texttt{MPI\_Sendrecv}. Cada linha recebida fica em uma
+\emph{linha fantasma}. Para uma célula na última linha de uma faixa e numa
+coluna interna, a linha fantasma inferior contém as três posições da faixa
+vizinha que podem contribuir para a ignição. Basta comunicar o estado
+dessas posições, pois só interessa saber quais estão em chamas.
+
+Uma barreira OpenMP torna as fronteiras recebidas disponíveis a toda a
+equipe antes da atualização. Cada thread acumula novas ignições e células
+em chamas. Uma redução OpenMP soma os contadores dentro de cada processo,
+e uma única \texttt{MPI\_Allreduce} soma os dois valores entre processos.
+Com os mesmos totais, todos atualizam o pico de ignições, trocam os vetores
+e encerram juntos se o fogo se extinguiu ou o limite de passos foi atingido.
+
+Na apuração final, \texttt{MPI\_Reduce} reúne as contagens por estado.
+Após a medição do tempo do núcleo, \texttt{MPI\_Gatherv} reúne os estados
+e os tempos de queima no rank 0, que calcula o checksum em ordem linear,
+calcula os percentuais e imprime os resultados.
+
+\subsection{Aglomeração}
+As tarefas de células de linhas consecutivas formam uma faixa por processo
+ativo. Uma faixa interna de $h$ linhas atualiza $hC$ células e envia $2C$
+estados de fronteira por passo, uma linha contígua para cada vizinho.
+Isso reúne em uma mensagem por vizinho as dependências verticais e diagonais.
+Para uma floresta de tamanho fixo, o volume enviado por célula atualizada
+é $2/h$ nessa faixa e cresce à medida que a faixa fica mais estreita.
+
+O rank 0 acumula a leitura, o processamento de sua faixa e a saída.
+Dentro de cada faixa, os laços percorrem grupos de células na mesma região
+paralela persistente. Na contagem final, um \texttt{omp taskloop} distribui
+blocos de células e combina as contagens por estado mediante redução.
+
+\subsection{Mapeamento}
+As faixas são atribuídas estaticamente aos $N_{\mathrm{proc}}$ processos
+criados por \texttt{mpirun}. Cada rank recebe $\lfloor L/N_{\mathrm{proc}}\rfloor$
+linhas e os primeiros $L\bmod N_{\mathrm{proc}}$ recebem uma linha adicional.
+Por exemplo, com dez linhas e três processos, os ranks 0, 1 e 2 atualizam
+respectivamente as linhas 0 a 3, 4 a 6 e 7 a 9. Se houver mais processos que
+linhas, os ranks sem células continuam participando das operações coletivas.
+
+Cada processo mantém $T$ threads. O laço de contenção usa
+\texttt{schedule(static)}, pois exige a mesma verificação simples por célula.
+A propagação usa \texttt{schedule(guided)}, que distribui novos blocos às
+threads disponíveis. O custo varia porque células intactas examinam a
+vizinhança, enquanto as já queimadas apenas conservam seu estado. A soma
+dos pesos dos vizinhos em chamas usa uma redução SIMD. Durante a simulação,
+a thread que inicializou o MPI realiza as chamadas de comunicação, conforme
+\texttt{MPI\_THREAD\_FUNNELED}. A distribuição física dos processos entre
+os nós e a afinidade com os núcleos dependem da configuração de execução.
+
+\end{document}

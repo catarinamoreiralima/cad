@@ -1,10 +1,13 @@
 #define _POSIX_C_SOURCE 200809L
 
+#include <ctype.h>
+#include <errno.h>
 #include <limits.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include <mpi.h>
 #include <omp.h>
@@ -31,9 +34,10 @@ typedef struct {
 
 typedef struct {
     int passos_executados;
-    int total_ignicoes;
+    long long total_ignicoes;
     int pico_passo;
-    int pico_qtd;
+    long long pico_qtd;
+    long long contagem[NUM_ESTADOS];
 } Resultado;
 
 static const int DL[8] = {-1, -1, -1,  0, 0,  1, 1, 1};
@@ -74,8 +78,8 @@ static int duracao_queima(int cobertura) {
     return cobertura == 2 ? 2 : 4;
 }
 
-static void gerar_floresta(Simulacao *sim, int *combustiveis_iniciais) {
-    int n = sim->L * sim->C;
+static void gerar_floresta(Simulacao *sim, long long *combustiveis_iniciais) {
+    size_t n = (size_t)sim->L * sim->C;
     unsigned int seed = (unsigned int)sim->seed;
     sim->cobertura = alocar_vetor(n);
     sim->umidade = alocar_vetor(n);
@@ -83,7 +87,7 @@ static void gerar_floresta(Simulacao *sim, int *combustiveis_iniciais) {
     sim->estado_atual = alocar_vetor(n);
     sim->tempo_atual = alocar_vetor(n);
 
-    for (int i = 0; i < n; i++) {
+    for (size_t i = 0; i < n; i++) {
         int valor = fire_rand_r(&seed) % 100;
         int cobertura;
         if (valor < 10) cobertura = 0;
@@ -98,11 +102,37 @@ static void gerar_floresta(Simulacao *sim, int *combustiveis_iniciais) {
     }
 }
 
+// Cada registro ocupa uma linha e contém exatamente os inteiros esperados.
+static int ler_linha(FILE *entrada, int quantidade, int *campos[]) {
+    char *linha = NULL;
+    size_t capacidade = 0;
+    ssize_t tamanho = getline(&linha, &capacidade, entrada);
+    int valida = tamanho >= 0 && memchr(linha, 0, (size_t)tamanho) == NULL;
+    char *cursor = linha;
+    for (int i = 0; valida && i < quantidade; i++) {
+        char *fim;
+        errno = 0;
+        long valor = strtol(cursor, &fim, 10);
+        valida = fim != cursor && errno != ERANGE && valor >= INT_MIN && valor <= INT_MAX &&
+                 (*fim == 0 || isspace((unsigned char)*fim));
+        if (valida) {
+            *campos[i] = (int)valor;
+            cursor = fim;
+        }
+    }
+    if (valida) {
+        while (isspace((unsigned char)*cursor)) cursor++;
+        valida = *cursor == 0;
+    }
+    free(linha);
+    return valida;
+}
+
 // Retorna o diagnóstico da entrada, ou NULL se a floresta estiver pronta.
 static const char *ler_entrada(FILE *entrada, Simulacao *sim,
-                               int *combustiveis_iniciais) {
-    if (fscanf(entrada, "%d%d%d%d%d%d", &sim->L, &sim->C, &sim->P,
-               &sim->T, &sim->seed, &sim->limiar) != 6 ||
+                               long long *combustiveis_iniciais) {
+    if (!ler_linha(entrada, 6, (int *[]){&sim->L, &sim->C, &sim->P,
+               &sim->T, &sim->seed, &sim->limiar}) ||
         sim->L <= 0 || sim->C <= 0 || sim->P < 0 ||
         sim->T <= 0 || sim->limiar <= 0) {
         return "parametros gerais invalidos";
@@ -110,12 +140,11 @@ static const char *ler_entrada(FILE *entrada, Simulacao *sim,
 
     int L = sim->L;
     int C = sim->C;
-    // Scatterv e Gatherv usam contagens e deslocamentos do tipo int.
-    if (L > INT_MAX / C) {
-        return "dimensoes excedem o limite de contagem MPI";
+    if ((uint64_t)L * C > SIZE_MAX / sizeof(int)) {
+        return "dimensoes excedem o espaco enderecavel";
     }
-    if (fscanf(entrada, "%d%d%d", &sim->vento_linha, &sim->vento_coluna,
-               &sim->intensidade) != 3 ||
+    if (!ler_linha(entrada, 3, (int *[]){&sim->vento_linha, &sim->vento_coluna,
+               &sim->intensidade}) ||
         sim->vento_linha < -1 || sim->vento_linha > 1 ||
         sim->vento_coluna < -1 || sim->vento_coluna > 1 ||
         (sim->vento_linha == 0 && sim->vento_coluna == 0) ||
@@ -123,19 +152,19 @@ static const char *ler_entrada(FILE *entrada, Simulacao *sim,
         return "configuracao do vento invalida";
     }
 
-    if (fscanf(entrada, "%d%d", &sim->F, &sim->Z) != 2 ||
-        sim->F < 0 || sim->F > L * C || sim->Z < 0) {
+    if (!ler_linha(entrada, 2, (int *[]){&sim->F, &sim->Z}) ||
+        sim->F < 0 || (long long)sim->F > (long long)L * C || sim->Z < 0) {
         return "quantidade de focos ou zonas invalida";
     }
 
     gerar_floresta(sim, combustiveis_iniciais);
     for (int f = 0; f < sim->F; f++) {
         int linha, coluna;
-        if (fscanf(entrada, "%d%d", &linha, &coluna) != 2 ||
+        if (!ler_linha(entrada, 2, (int *[]){&linha, &coluna}) ||
             linha < 0 || linha >= L || coluna < 0 || coluna >= C) {
             return "coordenadas de foco invalidas";
         }
-        int idx = linha * C + coluna;
+        size_t idx = (size_t)linha * C + coluna;
         if (sim->estado_atual[idx] == NAO_COMBUSTIVEL) {
             return "foco sobre celula nao combustivel";
         }
@@ -148,8 +177,8 @@ static const char *ler_entrada(FILE *entrada, Simulacao *sim,
 
     for (int z = 0; z < sim->Z; z++) {
         int passo_ativacao, linha_inicial, coluna_inicial, linha_final, coluna_final;
-        if (fscanf(entrada, "%d%d%d%d%d", &passo_ativacao, &linha_inicial,
-                   &coluna_inicial, &linha_final, &coluna_final) != 5 ||
+        if (!ler_linha(entrada, 5, (int *[]){&passo_ativacao, &linha_inicial,
+                   &coluna_inicial, &linha_final, &coluna_final}) ||
             passo_ativacao < 0 || passo_ativacao >= sim->P ||
             linha_inicial < 0 || linha_inicial > linha_final || linha_final >= L ||
             coluna_inicial < 0 || coluna_inicial > coluna_final || coluna_final >= C) {
@@ -157,14 +186,18 @@ static const char *ler_entrada(FILE *entrada, Simulacao *sim,
         }
         for (int linha = linha_inicial; linha <= linha_final; linha++) {
             for (int coluna = coluna_inicial; coluna <= coluna_final; coluna++) {
-                int idx = linha * C + coluna;
+                size_t idx = (size_t)linha * C + coluna;
                 if (sim->ativacao[idx] == -1 || passo_ativacao < sim->ativacao[idx]) {
                     sim->ativacao[idx] = passo_ativacao;
                 }
             }
         }
     }
-    return NULL;
+    int caractere;
+    while ((caractere = fgetc(entrada)) != EOF) {
+        if (!isspace(caractere)) return "dados excedentes no arquivo";
+    }
+    return ferror(entrada) ? "falha na leitura da entrada" : NULL;
 }
 
 static void precalcular_pesos(Simulacao *sim) {
@@ -176,7 +209,7 @@ static void precalcular_pesos(Simulacao *sim) {
     }
 }
 
-static int potencial_ignicao(const Simulacao *sim, int idx) {
+static int potencial_ignicao(const Simulacao *sim, size_t idx) {
     int C = sim->C;
     int coluna = idx % C;
     // O índice local da primeira linha própria inclui a linha fantasma superior.
@@ -195,7 +228,7 @@ static int potencial_ignicao(const Simulacao *sim, int idx) {
     return soma * fator * (100 - sim->umidade[idx]) / 100;
 }
 
-static void trocar_fronteiras(int *estado, int C, int n, int acima, int abaixo) {
+static void trocar_fronteiras(int *estado, int C, size_t n, int acima, int abaixo) {
     // MPI_PROC_NULL deixa a linha fantasma da borda externa zerada.
     MPI_Sendrecv(estado + C, C, MPI_INT, acima, 0,
                  estado + (size_t)n + C, C, MPI_INT, abaixo, 0,
@@ -205,9 +238,9 @@ static void trocar_fronteiras(int *estado, int C, int n, int acima, int abaixo) 
                  MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 }
 
-static void reduzir_estatisticas(int ignicoes, int chamas, int globais[2]) {
-    int locais[2] = {ignicoes, chamas};
-    MPI_Allreduce(locais, globais, 2, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+static void reduzir_estatisticas(long long ignicoes, long long chamas, long long globais[2]) {
+    long long locais[2] = {ignicoes, chamas};
+    MPI_Allreduce(locais, globais, 2, MPI_LONG_LONG_INT, MPI_SUM, MPI_COMM_WORLD);
 }
 
 static void trocar_matrizes(Simulacao *sim) {
@@ -220,23 +253,30 @@ static void trocar_matrizes(Simulacao *sim) {
     sim->proximo_tempo = tmp_tempo;
 }
 
-static Resultado simular(Simulacao *sim, int n, int acima, int abaixo) {
+static void verificar_equipe(int T) {
+    if (omp_get_num_threads() != T) {
+        fprintf(stderr, "Erro: OpenMP criou %d threads, mas a entrada exige %d.\n",
+                omp_get_num_threads(), T);
+        MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+    }
+}
+
+static Resultado simular(Simulacao *sim, size_t n, int acima, int abaixo) {
     Resultado resultado = {.pico_passo = -1};
     int C = sim->C;
     int continua = sim->P > 0 && sim->F > 0;
-    int ignicoes_no_passo = 0;
-    int em_chamas_no_passo = 0;
+    long long ignicoes_no_passo = 0;
+    long long em_chamas_no_passo = 0;
 
-    if (!continua) {
-        return resultado;
-    }
+    long long contagem_local[NUM_ESTADOS] = {0};
 
     #pragma omp parallel num_threads(sim->T) default(none) \
-        shared(sim, C, n, acima, abaixo, resultado, continua, ignicoes_no_passo, em_chamas_no_passo)
+        shared(sim, C, n, acima, abaixo, resultado, continua, ignicoes_no_passo, em_chamas_no_passo, contagem_local)
     {
+        if (omp_get_thread_num() == 0) verificar_equipe(sim->T);
         while (continua) {
             #pragma omp for schedule(static)
-            for (int idx = 0; idx < n; idx++) {
+            for (size_t idx = 0; idx < n; idx++) {
                 size_t idx_estado = (size_t)idx + C;
                 if (sim->ativacao[idx] == resultado.passos_executados &&
                     sim->estado_atual[idx_estado] == INTACTA) {
@@ -251,7 +291,7 @@ static Resultado simular(Simulacao *sim, int n, int acima, int abaixo) {
             #pragma omp barrier
 
             #pragma omp for schedule(guided) reduction(+:ignicoes_no_passo,em_chamas_no_passo)
-            for (int idx = 0; idx < n; idx++) {
+            for (size_t idx = 0; idx < n; idx++) {
                 size_t idx_estado = (size_t)idx + C;
                 int estado = sim->estado_atual[idx_estado];
                 int tempo = 0;
@@ -270,7 +310,7 @@ static Resultado simular(Simulacao *sim, int n, int acima, int abaixo) {
             }
 
             if (omp_get_thread_num() == 0) {
-                int globais[2];
+                long long globais[2];
                 reduzir_estatisticas(ignicoes_no_passo, em_chamas_no_passo, globais);
 
                 resultado.total_ignicoes += globais[0];
@@ -287,17 +327,24 @@ static Resultado simular(Simulacao *sim, int n, int acima, int abaixo) {
             }
             #pragma omp barrier
         }
+        #pragma omp single
+        {
+            #pragma omp taskloop reduction(+:contagem_local[:NUM_ESTADOS]) grainsize(8192)
+            for (size_t idx = 0; idx < n; idx++) {
+                contagem_local[sim->estado_atual[idx + C]]++;
+            }
+        }
     }
-
+    MPI_Reduce(contagem_local, resultado.contagem, NUM_ESTADOS, MPI_LONG_LONG_INT,
+               MPI_SUM, 0, MPI_COMM_WORLD);
     return resultado;
 }
 
-static void imprimir_resultado(const Simulacao *global, int n, int combustiveis_iniciais,
+static void imprimir_resultado(const Simulacao *global, size_t n, long long combustiveis_iniciais,
                                Resultado r, double tempo) {
-    int contagem[NUM_ESTADOS] = {0};
+    const long long *contagem = r.contagem;
     unsigned long long checksum = 0;
-    for (int i = 0; i < n; i++) {
-        contagem[global->estado_atual[i]]++;
+    for (size_t i = 0; i < n; i++) {
         checksum = checksum * 31ULL + (unsigned long long)global->estado_atual[i];
         checksum = checksum * 31ULL + (unsigned long long)global->tempo_atual[i];
     }
@@ -310,13 +357,13 @@ static void imprimir_resultado(const Simulacao *global, int n, int combustiveis_
     }
 
     printf("passos: %d\n", r.passos_executados);
-    printf("nao_combustiveis: %d\n", contagem[NAO_COMBUSTIVEL]);
-    printf("intactas: %d\n", contagem[INTACTA]);
-    printf("em_chamas: %d\n", contagem[EM_CHAMAS]);
-    printf("queimadas: %d\n", contagem[QUEIMADA]);
-    printf("contencao: %d\n", contagem[CONTENCAO]);
-    printf("total_ignicoes: %d\n", r.total_ignicoes);
-    printf("pico_ignicoes: %d %d\n", r.pico_passo, r.pico_qtd);
+    printf("nao_combustiveis: %lld\n", contagem[NAO_COMBUSTIVEL]);
+    printf("intactas: %lld\n", contagem[INTACTA]);
+    printf("em_chamas: %lld\n", contagem[EM_CHAMAS]);
+    printf("queimadas: %lld\n", contagem[QUEIMADA]);
+    printf("contencao: %lld\n", contagem[CONTENCAO]);
+    printf("total_ignicoes: %lld\n", r.total_ignicoes);
+    printf("pico_ignicoes: %d %lld\n", r.pico_passo, r.pico_qtd);
     printf("percentual_queimado: %.2f\n", queimado);
     printf("percentual_protegido: %.2f\n", protegido);
     printf("checksum: %llu\n", checksum);
@@ -370,7 +417,7 @@ int main(int argc, char *argv[]) {
     }
 
     Simulacao global = {0};
-    int combustiveis_iniciais = 0;
+    long long combustiveis_iniciais = 0;
     int entrada_valida = 1;
     if (rank == 0) {
         const char *erro = NULL;
@@ -403,7 +450,8 @@ int main(int argc, char *argv[]) {
     int C = sim.C;
     int linhas_base = L / processos;
     int resto = L % processos;
-    int n = (linhas_base + (rank < resto)) * C;
+    int linhas_locais = linhas_base + (rank < resto);
+    size_t n = (size_t)linhas_locais * C;
     int ativos = L < processos ? L : processos;
     int acima = rank > 0 && rank < ativos ? rank - 1 : MPI_PROC_NULL;
     int abaixo = rank < ativos - 1 ? rank + 1 : MPI_PROC_NULL;
@@ -417,7 +465,7 @@ int main(int argc, char *argv[]) {
         deslocamentos = alocar_vetor(processos);
         int inicio = 0;
         for (int r = 0; r < processos; r++) {
-            contagens[r] = (linhas_base + (r < resto)) * C;
+            contagens[r] = linhas_base + (r < resto);
             deslocamentos[r] = inicio;
             inicio += contagens[r];
         }
@@ -430,13 +478,17 @@ int main(int argc, char *argv[]) {
     sim.proximo_estado = alocar_vetor(tamanho_estado);
     sim.tempo_atual = alocar_vetor(n);
     sim.proximo_tempo = alocar_vetor(n);
+    // As coletivas contam linhas completas, mesmo quando L*C excede INT_MAX.
+    MPI_Datatype linha_mpi;
+    MPI_Type_contiguous(C, MPI_INT, &linha_mpi);
+    MPI_Type_commit(&linha_mpi);
     int *origens[] = {global.cobertura, global.umidade, global.ativacao,
                       global.estado_atual, global.tempo_atual};
     int *destinos[] = {sim.cobertura, sim.umidade, sim.ativacao,
                        sim.estado_atual + halo, sim.tempo_atual};
     for (size_t i = 0; i < sizeof(origens) / sizeof(origens[0]); i++) {
-        MPI_Scatterv(origens[i], contagens, deslocamentos, MPI_INT,
-                     destinos[i], n, MPI_INT, 0, MPI_COMM_WORLD);
+        MPI_Scatterv(origens[i], contagens, deslocamentos, linha_mpi,
+                     destinos[i], linhas_locais, linha_mpi, 0, MPI_COMM_WORLD);
     }
     free(global.cobertura);
     free(global.umidade);
@@ -455,14 +507,15 @@ int main(int argc, char *argv[]) {
 
     double tempo;
     MPI_Reduce(&duracao, &tempo, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
-    MPI_Gatherv(sim.estado_atual + halo, n, MPI_INT, global.estado_atual, contagens,
-                deslocamentos, MPI_INT, 0, MPI_COMM_WORLD);
-    MPI_Gatherv(sim.tempo_atual, n, MPI_INT, global.tempo_atual, contagens,
-                deslocamentos, MPI_INT, 0, MPI_COMM_WORLD);
+    MPI_Gatherv(sim.estado_atual + halo, linhas_locais, linha_mpi, global.estado_atual, contagens,
+                deslocamentos, linha_mpi, 0, MPI_COMM_WORLD);
+    MPI_Gatherv(sim.tempo_atual, linhas_locais, linha_mpi, global.tempo_atual, contagens,
+                deslocamentos, linha_mpi, 0, MPI_COMM_WORLD);
     if (rank == 0) {
-        imprimir_resultado(&global, L * C, combustiveis_iniciais, resultado, tempo);
+        imprimir_resultado(&global, (size_t)L * C, combustiveis_iniciais, resultado, tempo);
     }
 
+    MPI_Type_free(&linha_mpi);
     liberar_estruturas(&sim);
     liberar_estruturas(&global);
     free(contagens);
