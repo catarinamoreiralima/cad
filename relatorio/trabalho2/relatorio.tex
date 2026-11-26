@@ -10,12 +10,172 @@
 \setlength{\parindent}{0pt}
 \raggedbottom
 
+% Acrescimos para a capa e as demais secoes
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs,tabularx,array,longtable}
+\usepackage{graphicx,xcolor}
+\usepackage{listings}
+\usepackage{float}
+\usepackage[hidelinks]{hyperref}
+\emergencystretch=3em
+\newcommand{\apreencher}{\textcolor{red}{[a preencher]}}
+\lstset{basicstyle=\ttfamily\small,breaklines=true,frame=single,
+  columns=fullflexible,keepspaces=true,showstringspaces=false}
+\newcommand{\graficos}[4]{
+  \begin{figure}[H]
+    \centering
+    {\small $N_{\mathrm{proc}}=1$}\\
+    \includegraphics[width=0.92\linewidth]{../figuras/#1_mpi_guided_P1.pdf}\\[0.4em]
+    {\small $N_{\mathrm{proc}}=2$}\\
+    \includegraphics[width=0.92\linewidth]{../figuras/#1_mpi_guided_P2.pdf}\\[0.4em]
+    {\small $N_{\mathrm{proc}}=4$}\\
+    \includegraphics[width=0.92\linewidth]{../figuras/#1_mpi_guided_P4.pdf}
+    \caption[#2]{#2 #3}\label{#4}
+  \end{figure}}
+
+
 \begin{document}
+\begin{titlepage}
+\centering
+{\large Universidade de São Paulo\par}
+{\large Instituto de Ciências Matemáticas e de Computação\par}
+\vspace{1cm}
+{\large SSC0903 --- Computação de Alto Desempenho\par}
+{\large Segundo Trabalho Prático\par}
+\vfill
+{\LARGE\bfseries Incêndio Florestal\par}
+\vspace{0.5cm}
+{\Large Implementação híbrida com MPI e OpenMP\par}
+\vfill
+\begin{tabular}{ll}
+\textbf{Integrante} & \textbf{Número USP} \\
+João Ricardo de Almeida Lustosa & 15453697 \\
+Catarina Moreira Lima & 8957221 \\
+Larissa Pires Moreira Rocha Duarte & 15522358 \\
+Gabriel Phelippe Prado & 15453730 \\
+Frederico Scheffel Oliveira & 15452718\\
+\end{tabular}
+\vfill
+São Carlos\par
+Novembro de 2026
+\end{titlepage}
+\tableofcontents
+\newpage
+
 {\small Universidade de São Paulo \enspace · \enspace ICMC \enspace · \enspace SSC0903}\\[0.5em]
 {\LARGE\bfseries Simulação paralela de incêndio florestal}\\[0.35em]
 {\large Segundo trabalho prático de Computação de Alto Desempenho}
 
+\section{Introdução}
+
+Este trabalho simula a propagação de um incêndio florestal em uma grade de
+células. A cada passo discreto, o estado de cada célula é atualizado por
+regras locais que dependem de sua cobertura e umidade, dos vizinhos em
+chamas, do vento e de zonas de contenção ativadas em instantes
+predeterminados. A atualização é síncrona: o próximo estado é calculado
+somente a partir da configuração atual.
+
+No primeiro trabalho, o modelo foi implementado em versão sequencial e em
+versão paralela com OpenMP, para memória compartilhada~\cite{enunciado}.
+Neste segundo trabalho, a solução é híbrida: processos MPI dividem a matriz
+em faixas de linhas e, dentro de cada processo, threads OpenMP dividem as
+células da faixa. Como cada processo tem seu próprio espaço de endereçamento,
+passa a ser necessário distribuir os dados, trocar as linhas de fronteira a
+cada passo e combinar as estatísticas entre processos. Esses custos de
+comunicação e sincronização se somam ao ganho obtido com a divisão do
+trabalho, e o equilíbrio entre eles é avaliado experimentalmente.
+
+\section{Objetivos}
+
+\subsection{Objetivo geral}
+
+Implementar e avaliar uma versão híbrida, com MPI e OpenMP, da simulação
+determinística de propagação de incêndio, preservando os resultados da
+versão sequencial e analisando o desempenho para diferentes quantidades de
+processos e de threads.
+
+\subsection{Objetivos específicos}
+
+\begin{itemize}
+\item Projetar a solução paralela segundo as etapas de particionamento,
+comunicação, aglomeração e mapeamento (PCAM).
+\item Distribuir a matriz entre processos por faixas de linhas, com troca de
+linhas fantasma entre processos adjacentes.
+\item Paralelizar o trabalho de cada processo com uma região OpenMP
+persistente, laços compartilhados, reduções e SIMD.
+\item Verificar a equivalência das saídas em relação à versão sequencial.
+\item Medir tempos, speedup e eficiência em três cargas, variando a
+quantidade de processos e de threads por processo.
+\end{itemize}
+
+\section{Modelagem do problema}\label{sec:modelagem}
+
+\subsection{Domínio, estados e armazenamento}
+
+A floresta tem $L$ linhas e $C$ colunas, armazenadas linearmente com índice
+$i=lC+c$, e evolui por no máximo $P$ passos. Cada célula tem cobertura e
+umidade fixas e um estado: não combustível (0), intacta (1), em chamas (2),
+queimada (3) ou contenção (4). A Tabela~\ref{tab:cobertura} resume as
+coberturas.
+
+\begin{table}[H]
+\centering
+\caption{Coberturas e parâmetros do modelo. As proporções são as da regra de geração.}
+\label{tab:cobertura}
+\begin{tabular}{clrrr}
+\toprule
+\textbf{Código} & \textbf{Cobertura} & \textbf{Sorteio} & \textbf{Fator} & \textbf{Queima} \\
+\midrule
+0 & Água & 0--9 & 0 & \textemdash \\
+1 & Solo exposto & 10--19 & 0 & \textemdash \\
+2 & Vegetação rasteira & 20--54 & 8 & 2 passos \\
+3 & Floresta & 55--99 & 12 & 4 passos \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+A inicialização percorre a matriz em ordem linear e, para cada célula,
+sorteia primeiro a cobertura (\texttt{rand\_r \% 100}) e depois a umidade
+(\texttt{rand\_r \% 101}). Essa ordem é obrigatória para que todas as
+versões partam da mesma floresta. Os focos iniciais passam ao estado em
+chamas com o tempo de queima de sua cobertura.
+
+A entrada informa $L$, $C$, $P$, a quantidade $T$ de threads, a semente, o
+limiar de ignição, o vento e sua intensidade $V$, os focos e os retângulos
+de contenção com seus passos de ativação. Zonas sobrepostas são resolvidas
+guardando, para cada célula, o menor passo de ativação. No início do passo
+programado, apenas células intactas passam ao estado de contenção.
+
+\subsection{Propagação}
+
+São considerados os oito vizinhos de Moore. Para uma célula-alvo e um
+vizinho em chamas, com deslocamento $(\Delta l,\Delta c)$ do vizinho para o
+alvo e vento $(w_l,w_c)$, o peso é
+\begin{equation}
+P_v=\max\bigl(1,\;b_v+V(\Delta l\,w_l+\Delta c\,w_c)\bigr),
+\end{equation}
+em que $b_v=10$ para vizinhos ortogonais e $b_v=7$ para diagonais. Sendo
+$f_i$ o fator da cobertura e $u_i$ a umidade da célula-alvo, o potencial de
+ignição é
+\begin{equation}
+I_i=\left\lfloor\frac{\left(\sum_{v\text{ em chamas}}P_v\right) f_i\,(100-u_i)}{100}\right\rfloor.
+\end{equation}
+Uma célula intacta se incendeia quando $I_i$ atinge o limiar. Uma célula em
+chamas tem o tempo restante decrementado e se torna queimada ao chegar a
+zero. Uma nova ignição só influencia os vizinhos no passo seguinte. A
+simulação termina após $P$ passos ou quando não há células em chamas.
+
+\subsection{Estatísticas e saída}
+
+A saída informa os passos executados, as contagens finais por estado, o
+total e o pico de novas ignições (em empate, o primeiro passo), os
+percentuais queimado e protegido em relação às células inicialmente
+combustíveis, o \emph{checksum} e o tempo. O \emph{checksum} percorre a
+matriz em ordem linear e incorpora o estado e o tempo de cada célula pela
+operação $h\leftarrow 31h+x$, em \texttt{unsigned long long}.
+
 \section{Solução híbrida com MPI e OpenMP}
+\label{sec:pcam}
 A floresta é uma matriz de $L$ linhas por $C$ colunas. A partir dos focos
 iniciais, a simulação calcula a evolução do fogo sob a influência do vento, da
 cobertura, da umidade e das zonas de contenção. Cada passo depende do estado
@@ -97,8 +257,9 @@ Para uma floresta de tamanho fixo, o volume enviado por célula atualizada
 
 O rank 0 acumula a leitura, o processamento de sua faixa e a saída.
 Dentro de cada faixa, os laços percorrem grupos de células na mesma região
-paralela persistente. Na contagem final, um \texttt{omp taskloop} distribui
-blocos de células e combina as contagens por estado mediante redução.
+paralela persistente. Na contagem final, um \texttt{omp for} divide as células
+entre as threads. Cada thread acumula contadores privados por estado e os soma
+ao total do processo em uma seção \texttt{critical}.
 
 \subsection{Mapeamento}
 As faixas são atribuídas estaticamente aos $N_{\mathrm{proc}}$ processos
@@ -117,5 +278,409 @@ dos pesos dos vizinhos em chamas usa uma redução SIMD. Durante a simulação,
 a thread que inicializou o MPI realiza as chamadas de comunicação, conforme
 \texttt{MPI\_THREAD\_FUNNELED}. A distribuição física dos processos entre
 os nós e a afinidade com os núcleos dependem da configuração de execução.
+
+\section{Implementação sequencial}
+
+A versão sequencial, em \texttt{fire\_seq.c}, a mesma desenvolvida no
+primeiro trabalho, é a referência de correção e de desempenho. Cada passo
+ativa as zonas programadas, calcula o próximo estado e o próximo tempo de
+todas as células, atualiza o total e o pico de ignições, troca os ponteiros
+das matrizes atual e seguinte e verifica se ainda há fogo. Os pesos das oito
+direções são calculados uma única vez, antes da cronometragem. O programa
+usa OpenMP apenas para medir o tempo, com \texttt{omp\_get\_wtime()}, sem
+diretivas paralelas. O custo do trecho cronometrado é $O(P\,LC)$.
+
+\section{Implementação paralela}
+
+A versão híbrida está em \texttt{fire\_mpi\_omp.c}. A
+Seção~\ref{sec:pcam} apresenta o projeto PCAM; esta seção descreve sua
+realização no código.
+
+\subsection{Inicialização e distribuição dos dados}
+
+O MPI é iniciado com \texttt{MPI\_Init\_thread}, exigindo o nível
+\texttt{MPI\_THREAD\_FUNNELED}. Apenas o rank 0 lê e valida a entrada e
+gera a floresta, sequencialmente, o que preserva a ordem dos sorteios. O
+resultado da validação é difundido com \texttt{MPI\_Bcast}; se a entrada for
+inválida, todos os processos encerram. Os parâmetros inteiros são enviados
+em um único vetor, sem transmitir ponteiros.
+
+Um tipo derivado, criado com \texttt{MPI\_Type\_contiguous}, representa uma
+linha da matriz. Assim, as contagens e os deslocamentos das operações
+\texttt{MPI\_Scatterv} e \texttt{MPI\_Gatherv} são expressos em linhas, e
+não em células. São distribuídos a cobertura, a umidade, o mapa de ativação,
+o estado e o tempo. O rank 0 libera as três primeiras matrizes globais após
+a distribuição e conserva as de estado e tempo para reunir o resultado.
+
+\begin{table}[H]
+\centering
+\caption{Vetores locais de um processo com $h$ linhas ($n=hC$).}
+\begin{tabularx}{\linewidth}{llX}
+\toprule
+\textbf{Vetor} & \textbf{Tamanho} & \textbf{Função} \\
+\midrule
+\texttt{cobertura}, \texttt{umidade} & $n$ & Propriedades fixas. \\
+\texttt{ativacao} & $n$ & Primeiro passo de contenção, ou $-1$. \\
+\texttt{estado\_atual}, \texttt{proximo\_estado} & $n+2C$ & Estados, com uma linha fantasma acima e outra abaixo. \\
+\texttt{tempo\_atual}, \texttt{proximo\_tempo} & $n$ & Tempo restante de queima. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Processos sem linhas alocam vetores mínimos e não têm linhas fantasma. Nas
+bordas da floresta, o vizinho é \texttt{MPI\_PROC\_NULL}, e a linha fantasma
+correspondente permanece zerada.
+
+\subsection{Laço principal}
+
+Cada processo abre uma única região \texttt{parallel}, com
+\texttt{default(none)}, que envolve todos os passos:
+
+\begin{lstlisting}
+#pragma omp parallel num_threads(T)
+while (continua):
+    #pragma omp for schedule(static)    // ativa contencoes da faixa
+    thread 0: troca linhas fantasma     // MPI_Sendrecv (2 chamadas)
+    #pragma omp barrier
+    #pragma omp for schedule(guided) reduction(+: ignicoes, em_chamas)
+        // atualiza as celulas da faixa
+    thread 0: MPI_Allreduce; pico; troca de vetores; parada
+    #pragma omp barrier
+// contagem final por estado
+\end{lstlisting}
+
+A barreira implícita do primeiro laço garante que as contenções estejam
+aplicadas antes da troca de fronteiras. A barreira explícita seguinte
+garante que as linhas fantasma tenham sido recebidas antes da atualização.
+A barreira implícita do segundo laço conclui as reduções, e a última
+barreira publica os ponteiros trocados e a condição de parada para toda a
+equipe. São, portanto, quatro barreiras por passo. Como somente a thread 0,
+que inicializou o MPI, faz comunicação, o nível
+\texttt{MPI\_THREAD\_FUNNELED} é suficiente. A quantidade de threads vem do
+arquivo de entrada; \texttt{omp\_set\_dynamic(0)} impede ajustes
+automáticos, e o programa aborta se a equipe criada tiver outro tamanho.
+
+Em \texttt{potencial\_ignicao}, o laço sobre os oito vizinhos usa
+\texttt{omp simd reduction(+:soma)}. As linhas fantasma permitem acessar os
+vizinhos das fronteiras com a mesma aritmética de índices das linhas
+internas; apenas os limites de coluna precisam ser testados.
+
+\subsection{Contagem final e coleta}
+
+Ao fim do laço, ainda na região paralela, um \texttt{omp for} divide as
+células entre as threads. Cada thread conta os estados em um vetor privado e
+soma esse vetor ao total do processo em uma seção \texttt{critical}. Uma
+versão anterior usava \texttt{omp taskloop}, que o compilador do ambiente de
+testes não reconhecia, de modo que a contagem era executada por uma única
+thread. Os resultados apresentados neste relatório foram medidos após a
+substituição. Em seguida, \texttt{MPI\_Reduce} soma as contagens no rank 0.
+
+\subsection{Custo}
+
+Em um processo com $h$ linhas, cada passo custa $O(hC)$ de computação,
+dividido entre as $T$ threads, além do envio de até $2C$ estados de
+fronteira e de uma redução global de dois inteiros. A geração da floresta e
+o cálculo do \emph{checksum} continuam sequenciais no rank 0, que também
+precisa de memória para as matrizes globais.
+
+\section{Validação da correção}\label{sec:validacao}
+
+Na medição no cluster, as 240 execuções (10 sequenciais e 70 híbridas por
+carga) produziram, para cada carga, o mesmo \emph{checksum} e o mesmo número
+de passos (Tabela~\ref{tab:validacao}).
+
+\begin{table}[H]
+\centering
+\caption{\emph{Checksum} e passos idênticos entre as versões sequencial e híbrida.}
+\label{tab:validacao}
+\begin{tabular}{lrr}
+\toprule
+\textbf{Carga} & \textbf{Passos} & \textbf{Checksum} \\
+\midrule
+Pequena & 80 & 17073017104646724864 \\
+Média & 100 & 17187382406529706254 \\
+Grande & 100 & 14825089465781038537 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+O script de medição compara apenas o \emph{checksum}, que não verifica as
+contagens por estado. Por isso, em um teste complementar no macOS, com o
+mesmo código-fonte, a saída completa (todos os campos, exceto o tempo) foi
+comparada com a da versão sequencial nas três cargas, com
+$N_{\mathrm{proc}}\times T$ igual a $1\times1$, $1\times4$, $2\times4$,
+$4\times2$, $8\times1$ e $3\times2$. Não houve diferença em nenhuma das 18
+comparações. O caso com três processos inclui faixas de tamanhos diferentes.
+
+\section{Ambiente e metodologia experimental}\label{sec:ambiente}
+
+\subsection{Ambiente}
+
+\begin{table}[H]
+\centering
+\caption{Ambiente experimental no cluster.}
+\begin{tabularx}{\linewidth}{lX}
+\toprule
+\textbf{Item} & \textbf{Configuração} \\
+\midrule
+Máquina & \texttt{hal03} \\
+CPU e núcleos & \apreencher{} (limite de 8 trabalhadores nos experimentos) \\
+Memória e sistema & \apreencher \\
+Compilador & \apreencher \\
+Biblioteca MPI & \apreencher \\
+Compilação sequencial & \texttt{gcc -O3 -Wall -Wextra -std=c11 -fopenmp} \\
+Compilação híbrida & \texttt{mpicc -O3 -Wall -Wextra -std=c11 -fopenmp} \\
+Execução híbrida & \texttt{mpirun -np} $N_{\mathrm{proc}}$ \texttt{--bind-to none ./fire\_mpi\_omp entrada.txt}, sem lista de máquinas \\
+Escalonamento & \texttt{static} nas contenções e na contagem final; \texttt{guided} na propagação \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Cargas e protocolo}
+
+\begin{table}[H]
+\centering
+\caption{Cargas fornecidas. $T$ é o valor original do arquivo, substituído nos experimentos.}
+\begin{tabular}{lrrrrrr}
+\toprule
+\textbf{Carga} & $L$ & $C$ & $P$ & $T$ & $F$ & $Z$ \\
+\midrule
+Pequena & 400 & 500 & 80 & 4 & 3 & 2 \\
+Média & 1200 & 1500 & 100 & 8 & 6 & 4 \\
+Grande & 2500 & 2500 & 100 & 8 & 10 & 6 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+As medições foram feitas com \texttt{scripts/run\_linux.sh}. Foram usados
+$N_{\mathrm{proc}}\in\{1,2,4\}$ e $T\in\{1,2,4\}$, com
+$N_{\mathrm{proc}}T\leq8$. A combinação híbrida $1\times1$ não foi medida, e
+$4\times4$ excede o limite. Restam sete configurações híbridas, além da
+sequencial, cada uma com 10 repetições por carga, num total de 240
+execuções. Para variar $T$, o script altera temporariamente o quarto campo
+da primeira linha da entrada.
+
+\subsection{Trecho cronometrado}
+
+Na versão híbrida, após uma \texttt{MPI\_Barrier}, mede-se com
+\texttt{omp\_get\_wtime()} a execução da função \texttt{simular} em cada
+processo, e o tempo informado é o máximo entre os processos
+(\texttt{MPI\_Reduce} com \texttt{MPI\_MAX}). O trecho inclui a criação da
+equipe, os passos com sua comunicação, a contagem final por estado e a
+redução dessas contagens. Não inclui a leitura, a geração e a distribuição
+da floresta, a coleta das matrizes, o \emph{checksum} e a impressão. Na
+versão sequencial, a contagem final fica fora do trecho cronometrado; essa
+pequena diferença desfavorece a versão híbrida.
+
+\subsection{Métricas}
+
+Para a mesma carga, com $N_{\mathrm{proc}}$ processos e $T$ threads por
+processo,
+\begin{equation}
+S(N_{\mathrm{proc}},T)=\frac{\bar t_{\mathrm{seq}}}{\bar t_{\mathrm{hib}}(N_{\mathrm{proc}},T)},\qquad
+E(N_{\mathrm{proc}},T)=\frac{S(N_{\mathrm{proc}},T)}{N_{\mathrm{proc}}\,T}\times100\%,
+\end{equation}
+em que $\bar t$ é a média das 10 repetições. Como há variação entre
+repetições, também são apresentadas as medianas e a dispersão.
+
+\section{Resultados}\label{sec:resultados}
+
+\subsection{Tempos, speedup e eficiência}
+
+\begin{table}[H]
+\centering\small
+\caption{Tempos e métricas de desempenho --- carga pequena (médias de 10 repetições).}
+\label{tab:res-pequena}
+\begin{tabular}{rrrrrrr}
+\toprule
+$N_{\mathrm{proc}}$ & $T$ & $N_{\mathrm{proc}}T$ & $t_{\mathrm{seq}}$ (s) & $t_{\mathrm{hib}}$ (s) & $S$ & $E$ (\%) \\
+\midrule
+1 & 2 & 2 & 0.290010 & 0.210651 & 1.38 & 68.84 \\
+1 & 4 & 4 & 0.290010 & 0.129258 & 2.24 & 56.09 \\
+\midrule
+2 & 1 & 2 & 0.290010 & 0.201811 & 1.44 & 71.85 \\
+2 & 2 & 4 & 0.290010 & 0.144052 & 2.01 & 50.33 \\
+2 & 4 & 8 & 0.290010 & 0.452563 & 0.64 & 8.01 \\
+\midrule
+4 & 1 & 4 & 0.290010 & 0.129172 & 2.25 & 56.13 \\
+4 & 2 & 8 & 0.290010 & 0.245298 & 1.18 & 14.78 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[H]
+\centering\small
+\caption{Tempos e métricas de desempenho --- carga média (médias de 10 repetições).}
+\label{tab:res-media}
+\begin{tabular}{rrrrrrr}
+\toprule
+$N_{\mathrm{proc}}$ & $T$ & $N_{\mathrm{proc}}T$ & $t_{\mathrm{seq}}$ (s) & $t_{\mathrm{hib}}$ (s) & $S$ & $E$ (\%) \\
+\midrule
+1 & 2 & 2 & 3.311160 & 2.072303 & 1.60 & 79.89 \\
+1 & 4 & 4 & 3.311160 & 1.497892 & 2.21 & 55.26 \\
+\midrule
+2 & 1 & 2 & 3.311160 & 2.190033 & 1.51 & 75.60 \\
+2 & 2 & 4 & 3.311160 & 1.444900 & 2.29 & 57.29 \\
+2 & 4 & 8 & 3.311160 & 1.536582 & 2.15 & 26.94 \\
+\midrule
+4 & 1 & 4 & 3.311160 & 1.548118 & 2.14 & 53.47 \\
+4 & 2 & 8 & 3.311160 & 1.847071 & 1.79 & 22.41 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[H]
+\centering\small
+\caption{Tempos e métricas de desempenho --- carga grande (médias de 10 repetições).}
+\label{tab:res-grande}
+\begin{tabular}{rrrrrrr}
+\toprule
+$N_{\mathrm{proc}}$ & $T$ & $N_{\mathrm{proc}}T$ & $t_{\mathrm{seq}}$ (s) & $t_{\mathrm{hib}}$ (s) & $S$ & $E$ (\%) \\
+\midrule
+1 & 2 & 2 & 11.919676 & 7.320318 & 1.63 & 81.42 \\
+1 & 4 & 4 & 11.919676 & 4.617617 & 2.58 & 64.53 \\
+\midrule
+2 & 1 & 2 & 11.919676 & 7.714260 & 1.55 & 77.26 \\
+2 & 2 & 4 & 11.919676 & 5.276022 & 2.26 & 56.48 \\
+2 & 4 & 8 & 11.919676 & 4.371746 & 2.73 & 34.08 \\
+\midrule
+4 & 1 & 4 & 11.919676 & 5.284819 & 2.26 & 56.39 \\
+4 & 2 & 8 & 11.919676 & 4.761725 & 2.50 & 31.29 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+Nas Figuras~\ref{fig:tempos} a~\ref{fig:eficiencia}, cada linha de gráficos
+fixa $N_{\mathrm{proc}}$ e varia $T$; cada coluna corresponde a uma carga.
+Com um processo há medições para $T\in\{2,4\}$, e com quatro processos, para
+$T\in\{1,2\}$. O eixo horizontal usa escala logarítmica, por isso a reta
+ideal de speedup aparece curva.
+
+\graficos{tempos}{Tempo médio em função de $T$.}{A linha pontilhada é o tempo sequencial.}{fig:tempos}
+\graficos{speedup}{Speedup em função de $T$.}{A linha pontilhada é o speedup ideal $N_{\mathrm{proc}}T$.}{fig:speedup}
+\graficos{eficiencia}{Eficiência em função de $T$.}{A linha pontilhada marca 100\%.}{fig:eficiencia}
+
+\subsection{Variabilidade das medições}
+
+{\small
+\begin{longtable}{llrrrrr}
+\caption{Dispersão das 10 repetições de cada configuração ($N_{\mathrm{proc}}\times T$). CV é o desvio padrão amostral dividido pela média; $S_{\mathrm{med}}$ é o speedup calculado com as medianas.}\label{tab:dispersao}\\
+\toprule
+\textbf{Carga} & \textbf{Configuração} & Mediana (s) & Mín. (s) & Máx. (s) & CV (\%) & $S_{\mathrm{med}}$ \\
+\midrule
+\endfirsthead
+\toprule
+\textbf{Carga} & \textbf{Configuração} & Mediana (s) & Mín. (s) & Máx. (s) & CV (\%) & $S_{\mathrm{med}}$ \\
+\midrule
+\endhead
+\bottomrule
+\endfoot
+Pequena & sequencial & 0.284 & 0.280 & 0.336 & 5.6 & 1.00 \\
+Pequena & $1\times2$ & 0.203 & 0.162 & 0.264 & 19.3 & 1.40 \\
+Pequena & $1\times4$ & 0.133 & 0.112 & 0.141 & 7.6 & 2.14 \\
+Pequena & $2\times1$ & 0.175 & 0.168 & 0.265 & 20.6 & 1.62 \\
+Pequena & $2\times2$ & 0.133 & 0.085 & 0.298 & 39.3 & 2.13 \\
+Pequena & $2\times4$ & 0.455 & 0.264 & 0.763 & 29.0 & 0.62 \\
+Pequena & $4\times1$ & 0.131 & 0.115 & 0.141 & 6.5 & 2.17 \\
+Pequena & $4\times2$ & 0.292 & 0.071 & 0.468 & 62.6 & 0.97 \\
+\midrule
+Média & sequencial & 3.305 & 3.267 & 3.388 & 1.2 & 1.00 \\
+Média & $1\times2$ & 2.041 & 1.929 & 2.378 & 7.2 & 1.62 \\
+Média & $1\times4$ & 1.502 & 1.197 & 1.776 & 11.1 & 2.20 \\
+Média & $2\times1$ & 2.035 & 1.959 & 2.677 & 11.6 & 1.62 \\
+Média & $2\times2$ & 1.551 & 1.087 & 1.595 & 13.9 & 2.13 \\
+Média & $2\times4$ & 1.573 & 1.075 & 2.089 & 19.1 & 2.10 \\
+Média & $4\times1$ & 1.559 & 1.208 & 1.824 & 9.5 & 2.12 \\
+Média & $4\times2$ & 1.698 & 1.276 & 2.658 & 25.6 & 1.95 \\
+\midrule
+Grande & sequencial & 11.687 & 11.416 & 13.320 & 5.0 & 1.00 \\
+Grande & $1\times2$ & 7.321 & 6.801 & 7.762 & 4.9 & 1.60 \\
+Grande & $1\times4$ & 4.631 & 3.922 & 5.088 & 7.2 & 2.52 \\
+Grande & $2\times1$ & 7.695 & 6.838 & 8.925 & 8.2 & 1.52 \\
+Grande & $2\times2$ & 5.268 & 4.846 & 5.955 & 6.3 & 2.22 \\
+Grande & $2\times4$ & 4.316 & 3.647 & 5.530 & 12.9 & 2.71 \\
+Grande & $4\times1$ & 5.387 & 4.828 & 5.670 & 5.1 & 2.17 \\
+Grande & $4\times2$ & 4.771 & 4.264 & 5.189 & 5.5 & 2.45 \\
+\end{longtable}}
+
+
+\subsection{Análise}
+
+\textbf{Dois trabalhadores.} As configurações $1\times2$ e $2\times1$
+obtiveram speedups entre $1{,}38$ e $1{,}63$, com eficiência de $69\%$ a
+$81\%$. Na carga pequena, $2\times1$ foi ligeiramente melhor pela média
+($1{,}44$ contra $1{,}38$). Nas cargas média e grande, $1\times2$ ficou à
+frente ($1{,}60$ contra $1{,}51$ e $1{,}63$ contra $1{,}55$). Pelas medianas,
+as duas empatam na carga média ($1{,}62$).
+
+\textbf{Quatro trabalhadores.} Nas três cargas, há ganho em relação a dois
+trabalhadores nas melhores configurações, com speedups de até $2{,}25$ na
+carga pequena, $2{,}29$ na média e $2{,}58$ na grande, e eficiências entre
+$50\%$ e $65\%$. A melhor divisão não é a mesma em todas as cargas. Na
+grande, $1\times4$ ($S=2{,}58$) supera $2\times2$ e $4\times1$ (ambas
+$2{,}26$). Na pequena, $1\times4$ e $4\times1$ empatam ($2{,}24$ e
+$2{,}25$). Na média, as três ficam próximas ($2{,}14$ a $2{,}29$), e a
+ordem muda quando se usam as medianas. Portanto, os dados não indicam uma
+divisão entre processos e threads que seja sempre a melhor.
+
+\textbf{Oito trabalhadores.} O comportamento depende da carga. Na grande,
+$2\times4$ obteve o maior speedup do experimento ($2{,}73$), mas com
+eficiência de $34\%$ e ganho pequeno sobre $1\times4$; $4\times2$ ficou em
+$2{,}50$, abaixo de $1\times4$. Na média, as duas configurações com oito
+trabalhadores ($2{,}15$ e $1{,}79$) não superaram a melhor com quatro. Na
+pequena, houve forte degradação: $2\times4$ foi mais lenta que a versão
+sequencial ($S=0{,}64$), e $4\times2$ obteve apenas $1{,}18$ pela média e
+$0{,}97$ pela mediana.
+
+\textbf{Tamanho da carga.} O maior speedup cresce com a carga quando se
+comparam a pequena ($2{,}25$) e a grande ($2{,}73$). Isso é compatível com a
+modelagem: em faixas com poucas células, o custo fixo de sincronização e de
+comunicação por passo pesa proporcionalmente mais. Esses custos, porém, não
+foram medidos separadamente.
+
+\textbf{Variabilidade.} A Tabela~\ref{tab:dispersao} mostra dispersão
+elevada em algumas configurações, sobretudo na carga pequena. Em
+$4\times2$, o coeficiente de variação foi de $63\%$, com tempos de $0{,}071$
+a $0{,}468$\,s; em $2\times2$, foi de $39\%$. O menor tempo de $4\times2$
+é muito inferior à sua mediana, o que indica que a configuração pode executar
+bem mais rápido do que a média sugere, mas não o fez de forma consistente.
+Possíveis explicações são haver menos núcleos físicos que trabalhadores, a
+ausência de afinidade fixa (\texttt{--bind-to none}) e a concorrência com
+outros processos na máquina. Nenhuma dessas hipóteses foi verificada, e a
+degradação com oito trabalhadores não é atribuída a uma causa específica.
+
+\section{Conclusão}
+
+Foi implementada uma versão híbrida da simulação, com decomposição da matriz
+em faixas de linhas entre processos MPI, troca de linhas fantasma a cada
+passo e paralelização de cada faixa com OpenMP. Nas 240 execuções medidas, o
+\emph{checksum} e o número de passos foram iguais aos da versão sequencial
+em cada carga, e o teste complementar da saída completa não encontrou
+diferenças.
+
+Em desempenho, a versão híbrida foi mais rápida que a sequencial em quase
+todas as configurações, com speedup médio máximo de $2{,}25$ na carga
+pequena ($4\times1$), $2{,}29$ na média ($2\times2$) e $2{,}73$ na grande
+($2\times4$). A eficiência diminuiu com o aumento de trabalhadores. Passar
+de quatro para oito trabalhadores trouxe ganho pequeno na carga grande,
+apenas com $2\times4$, e não trouxe ganho nas demais; na pequena,
+$2\times4$ foi mais lenta que a versão sequencial.
+
+Como limitações, os experimentos usaram uma única máquina, sem lista de
+máquinas no \texttt{mpirun}, portanto não avaliam o custo de comunicação em
+rede entre nós. Não houve medição separada de computação e comunicação, nem
+comparação entre políticas de escalonamento na versão híbrida. Como
+continuação, é possível medir com a máquina dedicada, fixar a afinidade de
+processos e threads, separar o tempo gasto nas chamadas MPI e executar em
+vários nós.
+
+\begin{thebibliography}{9}
+\bibitem{enunciado}
+Universidade de São Paulo, ICMC/SSC.
+\textit{SSC0903 --- Primeiro Trabalho Prático: simulação paralela da
+propagação direcional de incêndio com zonas de contenção}.
+Arquivo \texttt{Trab01-Fire-OMP-v1.pdf}, setembro de 2026.
+\end{thebibliography}
 
 \end{document}
