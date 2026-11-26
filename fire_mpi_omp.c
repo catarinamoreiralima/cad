@@ -327,12 +327,14 @@ static Resultado simular(Simulacao *sim, size_t n, int acima, int abaixo) {
             }
             #pragma omp barrier
         }
-        #pragma omp single
-        {
-            #pragma omp taskloop reduction(+:contagem_local[:NUM_ESTADOS]) grainsize(8192)
-            for (size_t idx = 0; idx < n; idx++) {
-                contagem_local[sim->estado_atual[idx + C]]++;
-            }
+        long long parcial[NUM_ESTADOS] = {0};
+        #pragma omp for schedule(static) nowait
+        for (size_t idx = 0; idx < n; idx++) {
+            parcial[sim->estado_atual[idx + C]]++;
+        }
+        #pragma omp critical
+        for (int e = 0; e < NUM_ESTADOS; e++) {
+            contagem_local[e] += parcial[e];
         }
     }
     MPI_Reduce(contagem_local, resultado.contagem, NUM_ESTADOS, MPI_LONG_LONG_INT,

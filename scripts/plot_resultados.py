@@ -1,29 +1,33 @@
 #!/usr/bin/env python3
-"""Gera os graficos de tempo, speedup e eficiencia pedidos no Trab01-Fire-OMP.
+"""Gera os graficos de tempo, speedup e eficiencia da versao MPI + OpenMP.
 
-Le um ou mais CSVs de resultados/ (colunas: carga,versao,schedule,threads,
-repeticao,tempo_s,passos,checksum), calcula as metricas definidas no
-relatorio (S(T) = t_seq / t_omp(T), E(T) = S(T)/T * 100%) e produz, com o(s)
-schedule(s) OpenMP presentes nos dados no nome do arquivo:
+Le os CSVs gerados por scripts/run_linux.sh (colunas: carga,versao,schedule,
+processos,threads,repeticao,tempo_s,passos,checksum), usa o tempo medio de cada
+configuracao e calcula, com P processos e T threads por processo:
 
-    relatorio/figuras/tempos_<schedule>.pdf
-    relatorio/figuras/speedup_<schedule>.pdf
-    relatorio/figuras/eficiencia_<schedule>.pdf
+    S(P,T) = t_seq / t_mpi_omp(P,T)
+    E(P,T) = S(P,T) / (P*T) * 100%
 
-e um resumo tabular em resultados/resumo.csv, pronto para preencher a
-tabela "Tempos e metricas de desempenho" do relatorio.
+Produz, para cada schedule e cada quantidade de processos P presente nos dados,
+um painel por carga em funcao do numero de threads por processo T:
+
+    relatorio/figuras/tempos_mpi_<schedule>_P<P>.pdf
+    relatorio/figuras/speedup_mpi_<schedule>_P<P>.pdf
+    relatorio/figuras/eficiencia_mpi_<schedule>_P<P>.pdf
+
+e um resumo tabular em resultados/resumo_mpi.csv. CSVs que casem com o mesmo
+padrao sao agregados: nao misture execucoes de ambientes diferentes.
 
 Uso:
     python3 scripts/plot_resultados.py
-    python3 scripts/plot_resultados.py --csv "resultados/tempos_*.csv"
-    python3 scripts/plot_resultados.py --outdir relatorio/figuras --resumo resultados/resumo.csv
+    python3 scripts/plot_resultados.py --csv "resultados/mpi_linux_*_hal03_*.csv"
+    python3 scripts/plot_resultados.py --outdir relatorio/figuras --resumo resultados/resumo_mpi.csv
 """
 from __future__ import annotations
 
 import argparse
 import csv
 import glob
-import statistics
 from collections import defaultdict
 from pathlib import Path
 
@@ -46,19 +50,7 @@ LINESTYLES = ["-", "--", "-.", ":"]
 MARKERS = ["o", "s", "^", "D", "v", "P"]
 
 CARGA_ORDEM = ["pequena", "media", "grande"]
-
-
-def carga_cor(carga: str) -> str:
-    if carga in CARGA_ORDEM:
-        return CATEGORICAL[CARGA_ORDEM.index(carga) % len(CATEGORICAL)]
-    # carga desconhecida: cai nos slots seguintes, em ordem alfabetica estavel
-    extras = sorted(c for c in {carga} - set(CARGA_ORDEM))
-    idx = len(CARGA_ORDEM) + extras.index(carga)
-    return CATEGORICAL[idx % len(CATEGORICAL)]
-
-
-def carga_label(carga: str) -> str:
-    return carga[:1].upper() + carga[1:]
+RAIZ = Path(__file__).resolve().parent.parent
 
 
 def ler_csvs(padroes: list[str]) -> list[dict]:
@@ -70,7 +62,11 @@ def ler_csvs(padroes: list[str]) -> list[dict]:
         raise SystemExit(f"Nenhum CSV encontrado para: {padroes}")
     for caminho in arquivos:
         with open(caminho, newline="", encoding="utf-8") as f:
-            for row in csv.DictReader(f):
+            leitor = csv.DictReader(f)
+            if "processos" not in (leitor.fieldnames or []):
+                raise SystemExit(f"{caminho}: sem a coluna 'processos' (nao e um CSV da versao MPI).")
+            for row in leitor:
+                row["processos"] = int(row["processos"])
                 row["threads"] = int(row["threads"])
                 row["tempo_s"] = float(row["tempo_s"])
                 linhas.append(row)
@@ -82,10 +78,10 @@ def media(valores: list[float]) -> float:
 
 
 def agrupar(linhas: list[dict]):
-    """Agrupa tempo_s por (carga, versao, schedule, threads)."""
+    """Agrupa tempo_s por (carga, versao, schedule, processos, threads)."""
     grupos: dict[tuple, list[float]] = defaultdict(list)
     for r in linhas:
-        chave = (r["carga"], r["versao"], r["schedule"], r["threads"])
+        chave = (r["carga"], r["versao"], r["schedule"], r["processos"], r["threads"])
         grupos[chave].append(r["tempo_s"])
     return grupos
 
@@ -93,40 +89,45 @@ def agrupar(linhas: list[dict]):
 def construir_resumo(grupos: dict[tuple, list[float]]):
     """Retorna:
     - seq_base[carga] = tempo medio sequencial
-    - serie[(carga, schedule)] = lista de (threads, t_omp_medio, speedup, eficiencia, n)
+    - pontos = lista de dicts com as metricas de cada configuracao MPI + OpenMP
     """
     seq_base: dict[str, float] = {}
-    for (carga, versao, _schedule, _t), tempos in grupos.items():
+    for (carga, versao, *_resto), tempos in grupos.items():
         if versao == "seq":
             seq_base[carga] = media(tempos)
 
-    serie: dict[tuple[str, str], list[tuple[int, float, float, float, int]]] = defaultdict(list)
-    for (carga, versao, schedule, threads), tempos in grupos.items():
-        if versao != "omp":
+    pontos = []
+    for (carga, versao, schedule, processos, threads), tempos in grupos.items():
+        if versao != "mpi_omp" or carga not in seq_base:
             continue
-        if carga not in seq_base:
-            continue
-        t_omp = media(tempos)
-        t_seq = seq_base[carga]
-        speedup = t_seq / t_omp
-        eficiencia = speedup / threads * 100.0
-        serie[(carga, schedule)].append((threads, t_omp, speedup, eficiencia, len(tempos)))
+        tempo = media(tempos)
+        speedup = seq_base[carga] / tempo
+        pontos.append({
+            "carga": carga, "schedule": schedule,
+            "processos": processos, "threads": threads,
+            "total": processos * threads, "tempo": tempo, "speedup": speedup,
+            "eficiencia": speedup / (processos * threads) * 100.0, "n": len(tempos),
+        })
 
-    for chave in serie:
-        serie[chave].sort(key=lambda x: x[0])
-
-    return seq_base, serie
+    pontos.sort(key=lambda p: (ordem_carga(p["carga"]), p["schedule"], p["processos"], p["threads"]))
+    return seq_base, pontos
 
 
-def escrever_resumo(caminho: Path, seq_base: dict[str, float], serie: dict) -> None:
+def ordem_carga(carga: str) -> tuple:
+    idx = CARGA_ORDEM.index(carga) if carga in CARGA_ORDEM else len(CARGA_ORDEM)
+    return (idx, carga)
+
+
+def escrever_resumo(caminho: Path, seq_base: dict[str, float], pontos: list[dict]) -> None:
     caminho.parent.mkdir(parents=True, exist_ok=True)
     with open(caminho, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
-        w.writerow(["carga", "schedule", "threads", "t_seq_s", "t_omp_s", "speedup", "eficiencia_pct", "n_rep"])
-        for (carga, schedule), pontos in sorted(serie.items(), key=ordem_serie):
-            for threads, t_omp, speedup, eficiencia, n in pontos:
-                w.writerow([carga, schedule, threads, f"{seq_base[carga]:.6f}", f"{t_omp:.6f}",
-                            f"{speedup:.3f}", f"{eficiencia:.2f}", n])
+        w.writerow(["carga", "schedule", "processos", "threads", "total", "t_seq_s",
+                    "t_mpi_omp_s", "speedup", "eficiencia_pct", "n_rep"])
+        for p in pontos:
+            w.writerow([p["carga"], p["schedule"], p["processos"], p["threads"], p["total"],
+                        f"{seq_base[p['carga']]:.6f}", f"{p['tempo']:.6f}",
+                        f"{p['speedup']:.3f}", f"{p['eficiencia']:.2f}", p["n"]])
     print(f"Resumo escrito em {caminho}")
 
 
@@ -145,170 +146,89 @@ def estilizar_eixo(ax) -> None:
     ax.title.set_color(CHROME["text_primary"])
 
 
-def linestyle_por_schedule(schedules: list[str]) -> dict[str, str]:
-    mapa = {}
-    outros = [s for s in schedules if s != "-"]
-    for i, s in enumerate(sorted(set(outros))):
-        mapa[s] = LINESTYLES[i % len(LINESTYLES)]
-    mapa["-"] = ":"
-    return mapa
+def plot_metrica(seq_base, pontos, metrica: str, titulo: str, rotulo_y: str, caminho: Path) -> None:
+    """P fixo (todos os pontos tem o mesmo): um painel por carga, T no eixo x."""
+    cargas = sorted({p["carga"] for p in pontos}, key=ordem_carga)
+    n_proc = pontos[0]["processos"]
+    threads = sorted({p["threads"] for p in pontos})
+    # Tempos tem escalas diferentes entre cargas; speedup e eficiencia sao comparaveis.
+    fig, eixos = plt.subplots(1, len(cargas), figsize=(max(7, 4 * len(cargas)), 4.2), dpi=150,
+                              sharey=metrica != "tempo", squeeze=False)
+    legenda = {}
 
+    for ax, carga in zip(eixos[0], cargas):
+        serie = sorted((p for p in pontos if p["carga"] == carga), key=lambda p: p["threads"])
+        ax.plot([p["threads"] for p in serie], [p[metrica] for p in serie],
+                color=CATEGORICAL[0], marker=MARKERS[0], linewidth=2, markersize=8,
+                label="MPI + OpenMP")
 
-def marker_por_schedule(schedules: list[str]) -> dict[str, str]:
-    """Marcador distinto por schedule, na mesma ordem estavel de
-    linestyle_por_schedule, para diferenciar as series tambem por forma
-    (nao so por cor/traco) quando ha mais de um schedule no mesmo grafico."""
-    mapa = {}
-    outros = [s for s in schedules if s != "-"]
-    for i, s in enumerate(sorted(set(outros))):
-        mapa[s] = MARKERS[i % len(MARKERS)]
-    mapa["-"] = "x"
-    return mapa
+        referencia = dict(color=CHROME["muted"], linestyle=":", linewidth=1.5)
+        if metrica == "tempo":
+            ax.axhline(seq_base[carga], label="Sequencial", **referencia)
+            ax.set_ylim(bottom=0, top=max(ax.get_ylim()[1], seq_base[carga] * 1.1))
+        elif metrica == "speedup":
+            # Amostra a reta S = P*T, que aparece curva com o eixo x logaritmico.
+            xs = [threads[0] + (threads[-1] - threads[0]) * k / 100 for k in range(101)]
+            ax.plot(xs, [n_proc * x for x in xs], label="Ideal (P x T)", **referencia)
+        else:
+            ax.axhline(100, label="Ideal", **referencia)
 
+        ax.set_xscale("log", base=2)
+        ax.set_xticks(threads, [str(t) for t in threads])
+        ax.minorticks_off()
+        ax.set_title(f"Carga {carga}")
+        ax.set_xlabel("Threads por processo (T)")
+        estilizar_eixo(ax)
+        for linha, rotulo in zip(*ax.get_legend_handles_labels()):
+            legenda.setdefault(rotulo, linha)
 
-def ordem_serie(item) -> tuple:
-    (carga, schedule), _pontos = item
-    idx = CARGA_ORDEM.index(carga) if carga in CARGA_ORDEM else 99
-    return (idx, carga, schedule)
-
-
-def schedule_slug(serie: dict) -> str:
-    """Sufixo de nome de arquivo com o(s) schedule(s) OpenMP presentes nos
-    dados (ex.: "_guided-1024"), na mesma grafia usada nos CSVs de
-    resultados/. Varios schedules distintos no mesmo grafico viram um unico
-    sufixo com "-vs-" entre eles; sem schedule omp (so "-" de seq), fica vazio.
-    """
-    schedules = sorted({s for (_c, s) in serie.keys() if s != "-"})
-    if not schedules:
-        return ""
-    return "_" + "-vs-".join(s.replace(":", "-") for s in schedules)
-
-
-def plot_tempos(seq_base, serie, outdir: Path, slug: str) -> None:
-    fig, ax = plt.subplots(figsize=(7, 4.5), dpi=150)
-    schedules = [s for (_c, s) in serie.keys()]
-    ls_map = linestyle_por_schedule(schedules)
-    mk_map = marker_por_schedule(schedules)
-
-    todos_threads = sorted({t for pontos in serie.values() for (t, *_r) in pontos})
-    max_t = max(todos_threads) if todos_threads else 8
-
-    for carga in sorted(seq_base, key=lambda c: CARGA_ORDEM.index(c) if c in CARGA_ORDEM else 99):
-        cor = carga_cor(carga)
-        ax.hlines(seq_base[carga], 1, max_t, colors=cor, linestyles=":", linewidth=1.5, alpha=0.6,
-                   label=f"{carga_label(carga)} - sequencial")
-
-    for (carga, schedule), pontos in sorted(serie.items(), key=ordem_serie):
-        cor = carga_cor(carga)
-        xs = [p[0] for p in pontos]
-        ys = [p[1] for p in pontos]
-        rotulo_sched = f" ({schedule})" if schedule != "-" else ""
-        ax.plot(xs, ys, color=cor, linestyle=ls_map[schedule], linewidth=2,
-                marker=mk_map[schedule], markersize=6,
-                label=f"{carga_label(carga)} - OpenMP{rotulo_sched}")
-
-    ax.set_xlabel("Threads (T)")
-    ax.set_ylabel("Tempo (s)")
-    ax.set_title("Tempo de execucao em funcao do numero de threads")
-    ax.set_xticks(todos_threads)
-    estilizar_eixo(ax)
-    ax.legend(frameon=False, fontsize=8, loc="best")
-    fig.tight_layout()
-    fig.savefig(outdir / f"tempos{slug}.pdf", facecolor=fig.get_facecolor())
-    plt.close(fig)
-
-
-def plot_speedup(serie, outdir: Path, slug: str) -> None:
-    fig, ax = plt.subplots(figsize=(7, 4.5), dpi=150)
-    schedules = [s for (_c, s) in serie.keys()]
-    ls_map = linestyle_por_schedule(schedules)
-    mk_map = marker_por_schedule(schedules)
-
-    todos_threads = sorted({t for pontos in serie.values() for (t, *_r) in pontos})
-    max_t = max(todos_threads) if todos_threads else 8
-
-    ax.plot([1, max_t], [1, max_t], color=CHROME["muted"], linestyle="--", linewidth=1.5,
-            label="Speedup ideal S(T)=T")
-
-    for (carga, schedule), pontos in sorted(serie.items(), key=ordem_serie):
-        cor = carga_cor(carga)
-        xs = [p[0] for p in pontos]
-        ys = [p[2] for p in pontos]
-        rotulo_sched = f" ({schedule})" if schedule != "-" else ""
-        ax.plot(xs, ys, color=cor, linestyle=ls_map[schedule], linewidth=2,
-                marker=mk_map[schedule], markersize=6,
-                label=f"{carga_label(carga)}{rotulo_sched}")
-
-    ax.set_xlabel("Threads (T)")
-    ax.set_ylabel("Speedup S(T)")
-    ax.set_title("Speedup em funcao do numero de threads")
-    ax.set_xticks(todos_threads)
-    estilizar_eixo(ax)
-    ax.legend(frameon=False, fontsize=8, loc="best")
-    fig.tight_layout()
-    fig.savefig(outdir / f"speedup{slug}.pdf", facecolor=fig.get_facecolor())
-    plt.close(fig)
-
-
-def plot_eficiencia(serie, outdir: Path, slug: str) -> None:
-    fig, ax = plt.subplots(figsize=(7, 4.5), dpi=150)
-    schedules = [s for (_c, s) in serie.keys()]
-    ls_map = linestyle_por_schedule(schedules)
-    mk_map = marker_por_schedule(schedules)
-
-    todos_threads = sorted({t for pontos in serie.values() for (t, *_r) in pontos})
-
-    ax.axhline(100, color=CHROME["muted"], linestyle="--", linewidth=1.5, label="Eficiencia ideal (100%)")
-
-    for (carga, schedule), pontos in sorted(serie.items(), key=ordem_serie):
-        cor = carga_cor(carga)
-        xs = [p[0] for p in pontos]
-        ys = [p[3] for p in pontos]
-        rotulo_sched = f" ({schedule})" if schedule != "-" else ""
-        ax.plot(xs, ys, color=cor, linestyle=ls_map[schedule], linewidth=2,
-                marker=mk_map[schedule], markersize=6,
-                label=f"{carga_label(carga)}{rotulo_sched}")
-
-    ax.set_xlabel("Threads (T)")
-    ax.set_ylabel("Eficiencia E(T) (%)")
-    ax.set_title("Eficiencia em funcao do numero de threads")
-    ax.set_xticks(todos_threads)
-    estilizar_eixo(ax)
-    ax.legend(frameon=False, fontsize=8, loc="best")
-    fig.tight_layout()
-    fig.savefig(outdir / f"eficiencia{slug}.pdf", facecolor=fig.get_facecolor())
+    eixos[0][0].set_ylabel(rotulo_y)
+    if metrica != "tempo":
+        eixos[0][0].set_ylim(bottom=0)
+    fig.suptitle(titulo, color=CHROME["text_primary"])
+    fig.legend(legenda.values(), legenda.keys(), frameon=False, fontsize=9,
+               loc="lower center", ncol=min(len(legenda), 5))
+    fig.tight_layout(rect=(0, 0.08, 1, 1))
+    fig.savefig(caminho, facecolor=fig.get_facecolor())
     plt.close(fig)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--csv", nargs="+", default=["/Users/catarinamoreiralima/Documents/Faculdade/cad/trabalho-01/resultados/tempos_*.csv"],
-                         help="Padrao(oes) glob para os CSVs de entrada (padrao: resultados/tempos_*.csv)")
-    parser.add_argument("--outdir", default="relatorio/figuras",
+    parser.add_argument("--csv", nargs="+", default=[str(RAIZ / "resultados" / "mpi_*.csv")],
+                         help="Padrao(oes) glob para os CSVs de entrada (padrao: resultados/mpi_*.csv)")
+    parser.add_argument("--outdir", default=str(RAIZ / "relatorio" / "figuras"),
                          help="Diretorio de saida para os PDFs (padrao: relatorio/figuras)")
-    parser.add_argument("--resumo", default="resultados/resumo.csv",
-                         help="Caminho do CSV-resumo com as metricas (padrao: resultados/resumo.csv)")
+    parser.add_argument("--resumo", default=str(RAIZ / "resultados" / "resumo_mpi.csv"),
+                         help="Caminho do CSV-resumo (padrao: resultados/resumo_mpi.csv)")
     args = parser.parse_args()
 
     linhas = ler_csvs(args.csv)
-    grupos = agrupar(linhas)
-    seq_base, serie = construir_resumo(grupos)
+    seq_base, pontos = construir_resumo(agrupar(linhas))
 
     if not seq_base:
         raise SystemExit("Nenhuma execucao 'seq' encontrada nos CSVs; nao e possivel calcular speedup/eficiencia.")
-    if not serie:
-        raise SystemExit("Nenhuma execucao 'omp' encontrada nos CSVs.")
+    if not pontos:
+        raise SystemExit("Nenhuma execucao 'mpi_omp' encontrada nos CSVs.")
 
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
 
-    slug = schedule_slug(serie)
-    plot_tempos(seq_base, serie, outdir, slug)
-    plot_speedup(serie, outdir, slug)
-    plot_eficiencia(serie, outdir, slug)
-    escrever_resumo(Path(args.resumo), seq_base, serie)
+    metricas = [
+        ("tempos", "tempo", "Tempo de execucao", "Tempo (s)"),
+        ("speedup", "speedup", "Speedup", "Speedup S(P,T)"),
+        ("eficiencia", "eficiencia", "Eficiencia", "Eficiencia E(P,T) (%)"),
+    ]
+    for schedule, n_proc in sorted({(p["schedule"], p["processos"]) for p in pontos}):
+        selecao = [p for p in pontos if p["schedule"] == schedule and p["processos"] == n_proc]
+        sufixo = "_mpi_" + schedule.replace(":", "-").replace("=", "-") + f"_P{n_proc}"
+        for prefixo, metrica, titulo, rotulo_y in metricas:
+            caminho = outdir / f"{prefixo}{sufixo}.pdf"
+            plot_metrica(seq_base, selecao, metrica,
+                         f"{titulo} - {n_proc} processo(s) MPI ({schedule})", rotulo_y, caminho)
+            print(f"Grafico escrito em {caminho}")
 
-    print(f"Graficos escritos em {outdir}/tempos{slug}.pdf, {outdir}/speedup{slug}.pdf, {outdir}/eficiencia{slug}.pdf")
+    escrever_resumo(Path(args.resumo), seq_base, pontos)
 
 
 if __name__ == "__main__":
