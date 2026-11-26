@@ -18,7 +18,6 @@
 \usepackage{float}
 \usepackage[hidelinks]{hyperref}
 \emergencystretch=3em
-\newcommand{\apreencher}{\textcolor{red}{[a preencher]}}
 \lstset{basicstyle=\ttfamily\small,breaklines=true,frame=single,
   columns=fullflexible,keepspaces=true,showstringspaces=false}
 \newcommand{\graficos}[4]{
@@ -62,9 +61,6 @@ Novembro de 2026
 \tableofcontents
 \newpage
 
-{\small Universidade de São Paulo \enspace · \enspace ICMC \enspace · \enspace SSC0903}\\[0.5em]
-{\LARGE\bfseries Simulação paralela de incêndio florestal}\\[0.35em]
-{\large Segundo trabalho prático de Computação de Alto Desempenho}
 
 \section{Introdução}
 
@@ -75,9 +71,7 @@ chamas, do vento e de zonas de contenção ativadas em instantes
 predeterminados. A atualização é síncrona: o próximo estado é calculado
 somente a partir da configuração atual.
 
-No primeiro trabalho, o modelo foi implementado em versão sequencial e em
-versão paralela com OpenMP, para memória compartilhada~\cite{enunciado}.
-Neste segundo trabalho, a solução é híbrida: processos MPI dividem a matriz
+A solução é híbrida: processos MPI dividem a matriz
 em faixas de linhas e, dentro de cada processo, threads OpenMP dividem as
 células da faixa. Como cada processo tem seu próprio espaço de endereçamento,
 passa a ser necessário distribuir os dados, trocar as linhas de fronteira a
@@ -281,8 +275,8 @@ os nós e a afinidade com os núcleos dependem da configuração de execução.
 
 \section{Implementação sequencial}
 
-A versão sequencial, em \texttt{fire\_seq.c}, a mesma desenvolvida no
-primeiro trabalho, é a referência de correção e de desempenho. Cada passo
+A versão sequencial, em \texttt{fire\_seq.c}, é a referência
+ de correção e de desempenho. Cada passo
 ativa as zonas programadas, calcula o próximo estado e o próximo tempo de
 todas as células, atualiza o total e o pico de ignições, troca os ponteiros
 das matrizes atual e seguinte e verifica se ainda há fogo. Os pesos das oito
@@ -369,11 +363,7 @@ internas; apenas os limites de coluna precisam ser testados.
 
 Ao fim do laço, ainda na região paralela, um \texttt{omp for} divide as
 células entre as threads. Cada thread conta os estados em um vetor privado e
-soma esse vetor ao total do processo em uma seção \texttt{critical}. Uma
-versão anterior usava \texttt{omp taskloop}, que o compilador do ambiente de
-testes não reconhecia, de modo que a contagem era executada por uma única
-thread. Os resultados apresentados neste relatório foram medidos após a
-substituição. Em seguida, \texttt{MPI\_Reduce} soma as contagens no rank 0.
+soma esse vetor ao total do processo em uma seção \texttt{critical}. Em seguida, \texttt{MPI\_Reduce} soma as contagens no rank 0.
 
 \subsection{Custo}
 
@@ -404,14 +394,6 @@ Grande & 100 & 14825089465781038537 \\
 \end{tabular}
 \end{table}
 
-O script de medição compara apenas o \emph{checksum}, que não verifica as
-contagens por estado. Por isso, em um teste complementar no macOS, com o
-mesmo código-fonte, a saída completa (todos os campos, exceto o tempo) foi
-comparada com a da versão sequencial nas três cargas, com
-$N_{\mathrm{proc}}\times T$ igual a $1\times1$, $1\times4$, $2\times4$,
-$4\times2$, $8\times1$ e $3\times2$. Não houve diferença em nenhuma das 18
-comparações. O caso com três processos inclui faixas de tamanhos diferentes.
-
 \section{Ambiente e metodologia experimental}\label{sec:ambiente}
 
 \subsection{Ambiente}
@@ -424,10 +406,10 @@ comparações. O caso com três processos inclui faixas de tamanhos diferentes.
 \textbf{Item} & \textbf{Configuração} \\
 \midrule
 Máquina & \texttt{hal03} \\
-CPU e núcleos & \apreencher{} (limite de 8 trabalhadores nos experimentos) \\
-Memória e sistema & \apreencher \\
-Compilador & \apreencher \\
-Biblioteca MPI & \apreencher \\
+CPU e núcleos & Intel Core i7-4790 a 3,60\,GHz; 1 \emph{socket}, 4 núcleos físicos, 2 \emph{threads} por núcleo (8 CPUs lógicas) \\
+Memória e sistema & 31\,GiB de RAM; Ubuntu 24.04.5 LTS; kernel 5.15.75-051575-generic; arquitetura x86\_64 \\
+Compilador & gcc 5.3.1 20160413 (Ubuntu 5.3.1-14ubuntu2), também usado pelo \texttt{mpicc} \\
+Biblioteca MPI & Open MPI 4.0.1 \\
 Compilação sequencial & \texttt{gcc -O3 -Wall -Wextra -std=c11 -fopenmp} \\
 Compilação híbrida & \texttt{mpicc -O3 -Wall -Wextra -std=c11 -fopenmp} \\
 Execução híbrida & \texttt{mpirun -np} $N_{\mathrm{proc}}$ \texttt{--bind-to none ./fire\_mpi\_omp entrada.txt}, sem lista de máquinas \\
@@ -645,10 +627,14 @@ $4\times2$, o coeficiente de variação foi de $63\%$, com tempos de $0{,}071$
 a $0{,}468$\,s; em $2\times2$, foi de $39\%$. O menor tempo de $4\times2$
 é muito inferior à sua mediana, o que indica que a configuração pode executar
 bem mais rápido do que a média sugere, mas não o fez de forma consistente.
-Possíveis explicações são haver menos núcleos físicos que trabalhadores, a
-ausência de afinidade fixa (\texttt{--bind-to none}) e a concorrência com
-outros processos na máquina. Nenhuma dessas hipóteses foi verificada, e a
-degradação com oito trabalhadores não é atribuída a uma causa específica.
+O \texttt{hal03} tem 4
+núcleos físicos e 8 CPUs lógicas; assim, com oito trabalhadores há mais
+trabalhadores que núcleos físicos, e alguns precisam compartilhar um núcleo.
+Isso limita o ganho esperado, mas não explica por si só a degradação e a
+variação observadas na carga pequena. A ausência de afinidade fixa
+(\texttt{--bind-to none}) e a concorrência com outros processos na máquina
+também são possíveis fatores. O efeito de cada um não foi medido, e a
+degradação não é atribuída a uma causa específica.
 
 \section{Conclusão}
 
@@ -656,8 +642,7 @@ Foi implementada uma versão híbrida da simulação, com decomposição da matr
 em faixas de linhas entre processos MPI, troca de linhas fantasma a cada
 passo e paralelização de cada faixa com OpenMP. Nas 240 execuções medidas, o
 \emph{checksum} e o número de passos foram iguais aos da versão sequencial
-em cada carga, e o teste complementar da saída completa não encontrou
-diferenças.
+em cada carga.
 
 Em desempenho, a versão híbrida foi mais rápida que a sequencial em quase
 todas as configurações, com speedup médio máximo de $2{,}25$ na carga
@@ -674,13 +659,5 @@ comparação entre políticas de escalonamento na versão híbrida. Como
 continuação, é possível medir com a máquina dedicada, fixar a afinidade de
 processos e threads, separar o tempo gasto nas chamadas MPI e executar em
 vários nós.
-
-\begin{thebibliography}{9}
-\bibitem{enunciado}
-Universidade de São Paulo, ICMC/SSC.
-\textit{SSC0903 --- Primeiro Trabalho Prático: simulação paralela da
-propagação direcional de incêndio com zonas de contenção}.
-Arquivo \texttt{Trab01-Fire-OMP-v1.pdf}, setembro de 2026.
-\end{thebibliography}
 
 \end{document}
